@@ -9,3 +9,18 @@ wheels/
 # Virtual environments
 .venv
 .env
+
+# Configuration files (may contain API keys)
+my-config.yaml
+*-personal.yaml
+config.local.yaml
+
+# Output files
+results/
+logs/
+*.log
+
+# API keys and secrets
+.env.local
+*.key
+secrets.yaml

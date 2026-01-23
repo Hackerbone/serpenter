@@ -41,20 +41,22 @@ def cli(ctx, debug):
     if ctx.invoked_subcommand is None:
         console.print(BANNER, style="bold cyan")
         console.print("\n[yellow]Type 'serpenter --help' for usage information[/yellow]\n")
-        interactive_mode(debug)
+        interactive_mode(debug, None)
 
 @cli.command()
 @click.argument('objective', nargs=-1)
 @click.option('--target', '-t', help='Target subnet or host')
 @click.option('--auto', is_flag=True, help='Run in autonomous mode')
 @click.option('--debug', is_flag=True, help='Enable debug mode')
-def run(objective, target, auto, debug):
+@click.option('--config', '-c', help='Path to config file', type=click.Path(exists=True))
+def run(objective, target, auto, debug, config):
     """Execute a pentesting objective
     
     Examples:
         serpenter run "find all SMB shares in 192.168.1.0/24"
         serpenter run -t 10.0.0.0/24 "enumerate domain users"
         serpenter run --auto "get path to domain admin"
+        serpenter run --config custom.yaml "scan subnet"
     """
     
     objective_text = ' '.join(objective) if objective else None
@@ -71,9 +73,15 @@ def run(objective, target, auto, debug):
     console.print(BANNER, style="bold cyan")
     console.print(f"\n[bold green]Objective:[/bold green] {objective_text}\n")
     
-    # Initialize agent
-    config = Config(debug=debug, auto_mode=auto)
-    agent = SerpenterAgent(config)
+    # Initialize agent with config from YAML
+    agent_config = Config.from_yaml(Path(config) if config else None)
+    # Override with CLI flags
+    if debug:
+        agent_config.debug = True
+    if auto:
+        agent_config.auto_mode = True
+    
+    agent = SerpenterAgent(agent_config)
     
     # Execute
     try:
@@ -90,25 +98,60 @@ def run(objective, target, auto, debug):
 
 @cli.command()
 @click.option('--debug', is_flag=True, help='Enable debug mode')
-def interactive(debug):
+@click.option('--config', '-c', help='Path to config file', type=click.Path(exists=True))
+def interactive(debug, config):
     """Start interactive mode"""
     console.print(BANNER, style="bold cyan")
-    interactive_mode(debug)
+    interactive_mode(debug, config)
 
-def interactive_mode(debug=False):
+def interactive_mode(debug=False, config_path=None):
     """Interactive chat mode with the agent"""
     
     console.print("\n[bold cyan]Interactive Mode[/bold cyan]")
-    console.print("[dim]Enter your pentesting objectives naturally. Type 'exit' to quit.[/dim]\n")
+    console.print("[dim]Enter your pentesting objectives naturally.[/dim]")
+    console.print("[dim]Commands: /help, /debug, /verbose, /quiet, /status, exit[/dim]\n")
     
-    config = Config(debug=debug, auto_mode=False)
-    agent = SerpenterAgent(config)
+    agent_config = Config.from_yaml(Path(config_path) if config_path else None)
+    if debug:
+        agent_config.debug = True
+    agent_config.auto_mode = False
+    
+    agent = SerpenterAgent(agent_config)
+    
+    def show_status():
+        """Show current configuration status"""
+        console.print("\n[bold cyan]📊 Current Settings:[/bold cyan]")
+        console.print(f"  Debug Mode:   [{'green' if agent_config.debug else 'yellow'}]{'ON' if agent_config.debug else 'OFF'}[/]")
+        console.print(f"  Verbose Mode: [{'green' if agent_config.verbose else 'yellow'}]{'ON' if agent_config.verbose else 'OFF'}[/]")
+        console.print(f"  LLM Provider: [cyan]{agent_config.llm_provider}[/cyan]")
+        console.print(f"  Model:        [cyan]{agent_config.llm_model}[/cyan]")
+        console.print(f"  Max Iters:    [cyan]{agent_config.max_iterations}[/cyan]")
+    
+    def show_help():
+        """Show interactive commands help"""
+        console.print("\n[bold cyan]🐍 SERPENTER Interactive Commands:[/bold cyan]\n")
+        console.print("[bold yellow]Visibility Controls:[/bold yellow]")
+        console.print("  [green]/debug[/green]    - Toggle debug mode (shows detailed tool arguments)")
+        console.print("  [green]/verbose[/green]  - Toggle verbose mode (shows real-time tool execution)")
+        console.print("  [green]/quiet[/green]    - Quiet mode (minimal output, fastest)")
+        console.print("  [green]/status[/green]   - Show current settings")
+        console.print()
+        console.print("[bold yellow]Other Commands:[/bold yellow]")
+        console.print("  [green]/help[/green]     - Show this help message")
+        console.print("  [green]exit[/green]      - Exit SERPENTER (or: quit, q)")
+        console.print()
+        console.print("[bold cyan]Modes Explained:[/bold cyan]")
+        console.print("  [bold]Quiet Mode[/bold]   → Minimal output, fastest execution")
+        console.print("  [bold]Verbose Mode[/bold] → Shows tool calls in real-time")
+        console.print("  [bold]Debug Mode[/bold]   → Shows tool arguments + full details")
+        console.print()
     
     while True:
         try:
             # Get user input
             user_input = Prompt.ask("\n[bold green]serpenter>[/bold green]")
             
+            # Handle commands
             if user_input.lower() in ['exit', 'quit', 'q']:
                 console.print("\n[cyan]Exiting SERPENTER. Stay stealthy! 🐍[/cyan]")
                 break
@@ -116,16 +159,45 @@ def interactive_mode(debug=False):
             if not user_input.strip():
                 continue
             
+            # Special commands
+            if user_input.startswith('/'):
+                cmd = user_input.lower().strip()
+                
+                if cmd == '/help':
+                    show_help()
+                elif cmd == '/status':
+                    show_status()
+                elif cmd == '/debug':
+                    agent_config.debug = not agent_config.debug
+                    status = "enabled" if agent_config.debug else "disabled"
+                    console.print(f"\n[yellow]🔧 Debug mode {status}[/yellow]")
+                    if agent_config.debug:
+                        console.print("[dim]  → Will show detailed tool arguments and execution[/dim]")
+                elif cmd == '/verbose':
+                    agent_config.verbose = not agent_config.verbose
+                    status = "enabled" if agent_config.verbose else "disabled"
+                    console.print(f"\n[yellow]📢 Verbose mode {status}[/yellow]")
+                    if agent_config.verbose:
+                        console.print("[dim]  → Will show real-time tool execution[/dim]")
+                elif cmd == '/quiet':
+                    agent_config.verbose = False
+                    agent_config.debug = False
+                    console.print("\n[yellow]🔇 Quiet mode enabled (minimal output)[/yellow]")
+                else:
+                    console.print(f"[red]Unknown command: {cmd}[/red]")
+                    console.print("[dim]Type /help for available commands[/dim]")
+                continue
+            
             # Process with agent
             console.print()
             agent.execute_objective(user_input)
             
         except KeyboardInterrupt:
-            console.print("\n[yellow]Use 'exit' to quit[/yellow]")
+            console.print("\n[yellow]Use 'exit' to quit or Ctrl+C again to force exit[/yellow]")
             continue
         except Exception as e:
             console.print(f"\n[red]Error: {e}[/red]")
-            if debug:
+            if agent_config.debug:
                 console.print_exception()
 
 @cli.command()

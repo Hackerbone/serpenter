@@ -3,7 +3,6 @@ SERPENTER Agent - The core orchestration engine
 """
 
 from typing import List, Dict, Any
-from langchain_anthropic import ChatAnthropic
 from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from rich.console import Console
@@ -63,8 +62,8 @@ class SerpenterAgent:
         self.config = config
         self.console = Console()
 
-        # Initialize LLM
-        self.llm = ChatAnthropic(**config.model_kwargs)
+        # Initialize LLM (provider-agnostic)
+        self.llm = config.get_llm()
 
         # Get tools
         self.tools = get_tools(config.tools_enabled)
@@ -101,33 +100,69 @@ class SerpenterAgent:
             # Build messages for LangGraph
             messages = self.chat_history + [HumanMessage(content=objective)]
 
-            # Invoke the agent
-            result = self.agent.invoke({"messages": messages})
-
-            # Extract response - LangGraph returns a dict with 'messages' key
-            result_messages = result.get("messages", [])
-            
-            # Get the last AI message as the output
+            # Stream the agent execution for real-time feedback
             output = ""
             intermediate_steps = []
             
-            for msg in result_messages:
-                if hasattr(msg, 'content') and isinstance(msg, AIMessage):
-                    if msg.content:
-                        output = msg.content
-                # Collect tool calls for debug
-                if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                    for tool_call in msg.tool_calls:
-                        intermediate_steps.append((tool_call, None))
+            if self.config.verbose or self.config.debug:
+                # Stream with live updates
+                for event in self.agent.stream({"messages": messages}, stream_mode="updates"):
+                    for node_name, node_data in event.items():
+                        if node_name == "tools":
+                            # Tool execution
+                            messages_in_node = node_data.get("messages", [])
+                            for msg in messages_in_node:
+                                if hasattr(msg, 'content') and msg.content:
+                                    tool_output = str(msg.content)[:500]
+                                    if len(str(msg.content)) > 500:
+                                        tool_output += "..."
+                                    self.console.print(
+                                        Panel(
+                                            tool_output,
+                                            title=f"[cyan]🔧 Tool Output[/cyan]",
+                                            border_style="blue",
+                                            padding=(0, 1),
+                                        )
+                                    )
+                        elif node_name == "agent":
+                            # Agent reasoning
+                            messages_in_node = node_data.get("messages", [])
+                            for msg in messages_in_node:
+                                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                                    for tool_call in msg.tool_calls:
+                                        tool_name = tool_call.get('name', 'unknown')
+                                        tool_args = tool_call.get('args', {})
+                                        self.console.print(
+                                            f"[bold yellow]⚡ Calling:[/bold yellow] [cyan]{tool_name}[/cyan]"
+                                        )
+                                        if self.config.debug:
+                                            self.console.print(f"[dim]  Args: {tool_args}[/dim]")
+                                        intermediate_steps.append((tool_call, None))
+                                if hasattr(msg, 'content') and isinstance(msg, AIMessage) and msg.content:
+                                    output = msg.content
+            else:
+                # Non-streaming mode (faster, less output)
+                # Still show minimal progress
+                tool_count = 0
+                for event in self.agent.stream({"messages": messages}, stream_mode="updates"):
+                    for node_name, node_data in event.items():
+                        if node_name == "agent":
+                            messages_in_node = node_data.get("messages", [])
+                            for msg in messages_in_node:
+                                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                                    for tool_call in msg.tool_calls:
+                                        tool_count += 1
+                                        tool_name = tool_call.get('name', 'unknown')
+                                        self.console.print(f"[dim]⚙ Running tool {tool_count}: {tool_name}...[/dim]")
+                                        intermediate_steps.append((tool_call, None))
+                                if hasattr(msg, 'content') and isinstance(msg, AIMessage) and msg.content:
+                                    output = msg.content
 
             if not output:
                 output = "No response generated"
 
-            # Display reasoning and tool usage
-            if self.config.debug and intermediate_steps:
-                self._show_intermediate_steps(intermediate_steps)
-
             # Display final response
+            self.console.print()  # Spacing
             self._show_response(output)
 
             # Update chat history
