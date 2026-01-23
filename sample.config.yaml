@@ -1,0 +1,66 @@
+# SERPENTER Configuration File
+# Customize your LLM provider, model, and agent settings
+
+# LLM Provider Configuration
+llm:
+  # Provider: anthropic, openai, groq, or ollama
+  provider: "groq"
+  
+  # Model name (provider-specific)
+  # Anthropic: claude-sonnet-4-20250514, claude-3-5-sonnet-20241022
+  # OpenAI: gpt-4, gpt-3.5-turbo
+  # Groq: llama-3.3-70b-versatile, mixtral-8x7b-32768, llama-3.1-70b-versatile
+  # Groq OpenAI models: gpt-oss-120b (experimental)
+  model: "openai/gpt-oss-120b"
+  
+  # Model parameters
+  temperature: 0.1  # Low temperature for precise tool usage
+  max_tokens: 4096
+  
+  # API key (can also be set via environment variable)
+  # For Anthropic: ANTHROPIC_API_KEY
+  # For OpenAI: OPENAI_API_KEY
+  # For Groq: GROQ_API_KEY
+  api_key: null  # Leave null to use environment variable
+
+# Agent Configuration
+agent:
+  # Enable debug mode for verbose output
+  debug: true
+  
+  # Maximum iterations for agent reasoning loop
+  max_iterations: 10
+  
+  # Auto mode (less user interaction)
+  auto_mode: false
+  
+  # Verbose output
+  verbose: true
+
+# Tool Configuration
+tools:
+  # List of enabled tools
+  enabled:
+    - nmap
+    - netexec
+    - bash
+  
+  # Tool-specific settings
+  nmap:
+    default_timeout: 300  # seconds
+  
+  netexec:
+    default_timeout: 180  # seconds
+  
+  bash:
+    timeout: 60  # seconds
+    allow_dangerous: false
+
+# Output Configuration
+output:
+  # Log file path (null for no logging)
+  log_file: null
+  
+  # Save results to file
+  save_results: false
+  results_dir: "./results"

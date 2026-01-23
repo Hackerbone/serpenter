@@ -14,6 +14,7 @@ wheels/
 my-config.yaml
 *-personal.yaml
 config.local.yaml
+config.yaml
 
 # Output files
 results/
