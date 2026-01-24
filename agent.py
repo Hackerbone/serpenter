@@ -38,6 +38,14 @@ TOOL USAGE STRATEGY:
 - Chain tools together logically (discover hosts → enumerate shares/users)
 - Parse and filter results to highlight what matters
 
+CRITICAL - NetExec Command Format:
+- Correct: netexec smb 192.168.1.0/24 -u '' -p '' --users
+- WRONG: netexec -target 192.168.1.0/24 -protocol smb -action users
+- Protocol and target are POSITIONAL arguments, not flags
+- Actions use -- prefix (--users, --shares, --groups)
+- For null session, use empty strings: -u '' -p ''
+- When suggesting commands to users, ALWAYS use the correct format above
+
 ACTIVE DIRECTORY FOCUS:
 - Look for Domain Controllers (port 389/LDAP, 88/Kerberos, 445/SMB)
 - Identify accessible SMB shares (could contain credentials/intel)
@@ -113,9 +121,8 @@ class SerpenterAgent:
                             messages_in_node = node_data.get("messages", [])
                             for msg in messages_in_node:
                                 if hasattr(msg, 'content') and msg.content:
-                                    tool_output = str(msg.content)[:500]
-                                    if len(str(msg.content)) > 500:
-                                        tool_output += "..."
+                                    # Show full output without truncation
+                                    tool_output = str(msg.content)
                                     self.console.print(
                                         Panel(
                                             tool_output,

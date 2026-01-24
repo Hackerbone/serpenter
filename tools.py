@@ -158,6 +158,11 @@ class NetExecTool(BaseTool):
     description: str = """
     Enumerate network services using NetExec across multiple protocols.
     
+    IMPORTANT: NetExec command format is: netexec <protocol> <target> [options]
+    - Protocol and target are POSITIONAL arguments (not flags)
+    - Use --users, --shares, etc. for actions (not -action flag)
+    - For null session: use username="" and password="" (empty strings)
+    
     Use this when you need to:
     - List SMB shares on a target or subnet (protocol='smb', action='shares')
     - Enumerate domain users (protocol='smb', action='users')
@@ -168,7 +173,13 @@ class NetExecTool(BaseTool):
     
     Supported protocols: smb, winrm, ldap, rdp, ssh, vnc, ftp, mssql
     
-    Examples:
+    Correct command examples:
+    - netexec smb 192.168.1.0/24 -u '' -p '' --shares
+    - netexec smb 10.0.0.5 -u '' -p '' --users
+    - netexec winrm 10.0.0.10
+    - netexec ldap 192.168.1.100 -u '' -p '' --users
+    
+    Tool usage examples:
     - target="192.168.1.0/24", protocol="smb", action="shares" - Find all SMB shares in subnet
     - target="10.0.0.5", protocol="smb", action="users" - Enumerate SMB users
     - target="10.0.0.10", protocol="winrm" - Test WinRM access
@@ -192,18 +203,22 @@ class NetExecTool(BaseTool):
             return f"Invalid protocol '{protocol}'. Valid options: {', '.join(valid_protocols)}"
 
         # Build netexec command
+        # Format: netexec <protocol> <target> [options]
         cmd = ["netexec", protocol, target]
 
         # Add authentication if provided
-        if username:
+        if username is not None:
+            # Explicit username provided
             cmd.extend(["-u", username])
-            if password:
+            if password is not None:
                 cmd.extend(["-p", password])
             else:
-                cmd.extend(["-p", ""])  # Try null session
+                # Username but no password - try empty password
+                cmd.extend(["-p", ""])
         else:
-            # Try anonymous/null session for protocols that support it
+            # No username provided - try anonymous/null session for protocols that support it
             if protocol in ["smb", "ldap"]:
+                # Force null session with explicit empty strings
                 cmd.extend(["-u", "", "-p", ""])
 
         # Add action-specific flags based on protocol
@@ -211,6 +226,12 @@ class NetExecTool(BaseTool):
             action_flag = self._get_action_flag(protocol, action)
             if action_flag:
                 cmd.append(action_flag)
+
+        # Format command for display (escape special characters in password)
+        cmd_display = " ".join(
+            f'"{arg}"' if " " in arg or not arg else arg
+            for arg in cmd
+        )
 
         try:
             result = subprocess.run(
@@ -224,9 +245,9 @@ class NetExecTool(BaseTool):
             output = result.stdout + result.stderr
 
             if not output.strip():
-                return f"No {protocol.upper()} services found or access denied"
+                return f"Command: {cmd_display}\n\nNo {protocol.upper()} services found or access denied"
 
-            return self._parse_netexec_output(output, protocol, action)
+            return self._parse_netexec_output(output, protocol, action, cmd_display)
 
         except subprocess.TimeoutExpired:
             return "NetExec scan timed out after 3 minutes"
@@ -246,6 +267,9 @@ class NetExecTool(BaseTool):
                 "groups": "--groups",
                 "pass-pol": "--pass-pol",
                 "rid-brute": "--rid-brute",
+                "sam": "--sam",
+                "lsa": "--lsa",
+                "ntds": "--ntds",
             },
             "ldap": {
                 "users": "--users",
@@ -261,75 +285,95 @@ class NetExecTool(BaseTool):
         return protocol_actions.get(action)
 
     def _parse_netexec_output(
-        self, output: str, protocol: str, action: Optional[str]
+        self, output: str, protocol: str, action: Optional[str], cmd_display: str
     ) -> str:
         """Parse and format NetExec output"""
         lines = output.split("\n")
 
-        results = {"hosts": [], "shares": [], "users": [], "groups": [], "errors": []}
+        results = {"hosts": [], "shares": [], "users": [], "groups": [], "errors": [], "other": []}
 
         for line in lines:
+            original_line = line
             line = line.strip()
 
             # Skip empty lines
             if not line:
                 continue
 
-            # Detect hosts (protocol-specific port detection)
-            if any(x in line for x in ["445", "5985", "389", "3389", "22"]):
-                results["hosts"].append(line)
+            # Detect hosts (protocol-specific port detection or protocol name)
+            if any(x in line for x in ["445", "5985", "389", "3389", "22", "1433", "3306", "21", "5900"]) or \
+               any(x in line for x in ["SMB", "WINRM", "LDAP", "RDP", "SSH", "VNC", "FTP", "MSSQL"]):
+                results["hosts"].append(original_line)
 
             # Detect shares (SMB)
-            if "READ" in line or "WRITE" in line:
-                results["shares"].append(line)
+            elif "READ" in line or "WRITE" in line:
+                results["shares"].append(original_line)
 
             # Detect users
-            if "User:" in line or "UserName:" in line or "\\User" in line:
-                results["users"].append(line)
+            elif "User:" in line or "UserName:" in line or "\\User" in line or "[+]" in line and "\\" in line:
+                results["users"].append(original_line)
 
             # Detect groups
-            if "Group:" in line or "GroupName:" in line:
-                results["groups"].append(line)
+            elif "Group:" in line or "GroupName:" in line:
+                results["groups"].append(original_line)
 
             # Detect errors
-            if "ERROR" in line or "DENIED" in line or "STATUS_" in line:
-                results["errors"].append(line)
+            elif "ERROR" in line or "DENIED" in line or "STATUS_" in line:
+                results["errors"].append(original_line)
+
+            # Capture other meaningful lines (non-empty, not just whitespace)
+            elif line and not line.startswith("─") and not line.startswith("│"):
+                results["other"].append(original_line)
 
         # Format output
         formatted = []
+        formatted.append(f"Command: {cmd_display}")
+        formatted.append("")
         formatted.append(f"{protocol.upper()} ENUMERATION RESULTS:")
         formatted.append("")
 
         if results["hosts"]:
             formatted.append(f"HOSTS FOUND ({len(results['hosts'])}):")
-            for host in results["hosts"][:10]:  # Limit to 10
+            for host in results["hosts"]:  # Show all hosts
                 formatted.append(f"  • {host}")
-            if len(results["hosts"]) > 10:
-                formatted.append(f"  ... and {len(results['hosts']) - 10} more")
             formatted.append("")
 
         if results["shares"]:
             formatted.append(f"ACCESSIBLE SHARES ({len(results['shares'])}):")
-            for share in results["shares"][:20]:  # Limit to 20
+            for share in results["shares"]:  # Show all shares
                 formatted.append(f"  • {share}")
-            if len(results["shares"]) > 20:
-                formatted.append(f"  ... and {len(results['shares']) - 20} more")
             formatted.append("")
 
         if results["users"]:
             formatted.append(f"USERS ENUMERATED ({len(results['users'])}):")
-            for user in results["users"][:15]:
+            for user in results["users"]:  # Show all users
                 formatted.append(f"  • {user}")
             formatted.append("")
 
         if results["groups"]:
             formatted.append(f"GROUPS ENUMERATED ({len(results['groups'])}):")
-            for group in results["groups"][:15]:
+            for group in results["groups"]:  # Show all groups
                 formatted.append(f"  • {group}")
+            formatted.append("")
 
-        if not any([results["hosts"], results["shares"], results["users"], results["groups"]]):
-            # Return raw output if we couldn't parse anything useful
-            return output[:1000]  # Limit to 1000 chars
+        if results["errors"]:
+            formatted.append(f"ERRORS ({len(results['errors'])}):")
+            for error in results["errors"]:  # Show all errors
+                formatted.append(f"  • {error}")
+            formatted.append("")
+
+        # If we didn't capture much through parsing, show raw output
+        total_parsed = sum(len(v) for v in [results["hosts"], results["shares"], results["users"], results["groups"], results["errors"]])
+        if total_parsed == 0 or (total_parsed < 5 and len(output) > 500):
+            # Show raw output if parsing didn't capture much
+            formatted.append("FULL OUTPUT:")
+            formatted.append("─" * 80)
+            formatted.append(output)
+        elif results["other"]:
+            # Show other lines that might be relevant
+            formatted.append("ADDITIONAL OUTPUT:")
+            for other in results["other"][:50]:  # Limit other lines to avoid spam
+                formatted.append(f"  {other}")
 
         return "\n".join(formatted)
 

@@ -25,3 +25,5 @@ logs/
 .env.local
 *.key
 secrets.yaml
+
+kerberoast_hashes.txt

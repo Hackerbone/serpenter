@@ -13,8 +13,12 @@ dependencies = [
     "langchain-openai>=1.1.7",
     "langgraph>=1.0.7",
     "langgraph-prebuilt>=1.0.7",
+    "netexec",
     "pydantic>=2.12.5",
     "python-dotenv>=1.2.1",
     "pyyaml>=6.0.2",
     "rich>=14.2.0",
 ]
+
+[tool.uv.sources]
+netexec = { git = "https://github.com/Pennyw0rth/NetExec" }
