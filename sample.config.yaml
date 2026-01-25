@@ -43,6 +43,9 @@ tools:
   enabled:
     - nmap
     - netexec
+    - impacket
+    - ldapsearch
+    - hashcat
     - bash
   
   # Tool-specific settings
@@ -51,6 +54,13 @@ tools:
   
   netexec:
     default_timeout: 180  # seconds
+  
+  hashcat:
+    default_timeout: 600  # seconds (10 min default, cracking can take much longer)
+    # Default wordlist path (if not specified in tool call)
+    default_wordlist: "/usr/share/wordlists/rockyou.txt"
+    # Default rules file
+    default_rules: "/usr/share/hashcat/rules/best64.rule"
   
   bash:
     timeout: 60  # seconds
