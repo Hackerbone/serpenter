@@ -36,6 +36,9 @@ agent:
   
   # Verbose output
   verbose: true
+  
+  # Ask for confirmation before executing commands (for pentester visibility)
+  confirm_commands: false
 
 # Tool Configuration
 tools:
@@ -47,6 +50,15 @@ tools:
     - ldapsearch
     - hashcat
     - bash
+  
+  # Run certain tools with sudo privileges automatically
+  use_sudo: false
+  
+  # List of tools that should use sudo when use_sudo is enabled
+  sudo_tools:
+    - nmap
+    - netexec
+    - hashcat
   
   # Tool-specific settings
   nmap:

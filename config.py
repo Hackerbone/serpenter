@@ -26,10 +26,13 @@ class Config:
     auto_mode: bool = False
     max_iterations: int = 10
     verbose: bool = True
+    confirm_commands: bool = False
 
     # Tool configuration
     tools_enabled: List[str] = field(default_factory=lambda: ["nmap", "netexec", "bash"])
     tool_settings: Dict[str, Any] = field(default_factory=dict)
+    use_sudo: bool = False
+    sudo_tools: List[str] = field(default_factory=lambda: ["nmap", "netexec", "hashcat"])
 
     # Output configuration
     log_file: Optional[Path] = None
@@ -84,10 +87,13 @@ class Config:
             auto_mode=agent_config.get('auto_mode', False),
             max_iterations=agent_config.get('max_iterations', 10),
             verbose=agent_config.get('verbose', True),
+            confirm_commands=agent_config.get('confirm_commands', False),
             
             # Tool settings
             tools_enabled=tools_config.get('enabled', ['nmap', 'netexec', 'bash']),
             tool_settings=tools_config,
+            use_sudo=tools_config.get('use_sudo', False),
+            sudo_tools=tools_config.get('sudo_tools', ['nmap', 'netexec', 'hashcat']),
             
             # Output settings
             log_file=Path(output_config['log_file']) if output_config.get('log_file') else None,

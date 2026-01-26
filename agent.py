@@ -101,8 +101,8 @@ class SerpenterAgent:
         # Initialize LLM (provider-agnostic)
         self.llm = config.get_llm()
 
-        # Get tools
-        self.tools = get_tools(config.tools_enabled)
+        # Get tools with config
+        self.tools = get_tools(config.tools_enabled, config)
 
         # Create agent using LangGraph
         # The system prompt is passed via the prompt parameter

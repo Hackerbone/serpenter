@@ -7,6 +7,27 @@ import shlex
 from typing import Optional, List, ClassVar, Dict
 from langchain.tools import BaseTool
 from pydantic import BaseModel, Field
+from rich.console import Console
+from rich.prompt import Confirm
+
+console = Console()
+
+
+def confirm_execution(cmd_display: str, tool_name: str) -> bool:
+    """
+    Ask user to confirm command execution.
+    
+    Args:
+        cmd_display: Command string to display
+        tool_name: Name of the tool being executed
+        
+    Returns:
+        True if user confirms, False if user skips
+    """
+    console.print(f"\n[bold yellow]Command to execute ({tool_name}):[/bold yellow]")
+    console.print(f"[cyan]{cmd_display}[/cyan]")
+    
+    return Confirm.ask("\nExecute this command?", default=True)
 
 
 class NmapScanInput(BaseModel):
@@ -65,6 +86,18 @@ class NmapScanTool(BaseTool):
             cmd.extend(["-p", ports])
 
         cmd.append(target)
+
+        # Add sudo if configured
+        if self.config and self.config.use_sudo and "nmap" in self.config.sudo_tools:
+            cmd = ["sudo"] + cmd
+
+        # Format command for display
+        cmd_display = " ".join(cmd)
+
+        # Ask for confirmation if configured
+        if self.config and self.config.confirm_commands:
+            if not confirm_execution(cmd_display, "nmap"):
+                return "Command skipped by user"
 
         try:
             result = subprocess.run(
@@ -161,20 +194,14 @@ class NetExecTool(BaseTool):
     
     IMPORTANT: NetExec command format is: netexec <protocol> <target> [options]
     - Protocol and target are POSITIONAL arguments (not flags)
-    - Use --users, --shares, etc. for actions (not -action flag)
-    - For null session: use username="" and password="" (empty strings)
     
     Use this when you need to:
-    - List SMB shares on a target or subnet (protocol='smb', action='shares')
-    - Enumerate domain users (protocol='smb', action='users')
-    - Test WinRM access (protocol='winrm')
-    - Query LDAP services (protocol='ldap', action='users' or 'groups')
-    - Check RDP access (protocol='rdp')
-    - Test SSH access (protocol='ssh')
+    - Find details/run exploits via netexec supported protocols
+    - Incase you want to explore more netexec options, just run netexec help command to understand what all you can do.
     
     Supported protocols: smb, winrm, ldap, rdp, ssh, vnc, ftp, mssql
     
-    Correct command examples:
+    Correct command examples (these are not exhaustive):
     - netexec smb 192.168.1.0/24 -u '' -p '' --shares
     - netexec smb 10.0.0.5 -u '' -p '' --users
     - netexec winrm 10.0.0.10
@@ -228,11 +255,20 @@ class NetExecTool(BaseTool):
             if action_flag:
                 cmd.append(action_flag)
 
+        # Add sudo if configured
+        if self.config and self.config.use_sudo and "netexec" in self.config.sudo_tools:
+            cmd = ["sudo"] + cmd
+
         # Format command for display (escape special characters in password)
         cmd_display = " ".join(
             f'"{arg}"' if " " in arg or not arg else arg
             for arg in cmd
         )
+
+        # Ask for confirmation if configured
+        if self.config and self.config.confirm_commands:
+            if not confirm_execution(cmd_display, "netexec"):
+                return "Command skipped by user"
 
         try:
             result = subprocess.run(
@@ -529,8 +565,17 @@ class HashcatTool(BaseTool):
         if extra_args:
             cmd.extend(extra_args.split())
 
+        # Add sudo if configured
+        if self.config and self.config.use_sudo and "hashcat" in self.config.sudo_tools:
+            cmd = ["sudo"] + cmd
+
         # Format command for display
         cmd_display = " ".join(cmd)
+
+        # Ask for confirmation if configured
+        if self.config and self.config.confirm_commands:
+            if not confirm_execution(cmd_display, "hashcat"):
+                return "Command skipped by user"
 
         # For actual cracking, we need a different approach - run without --show first
         crack_cmd = [c for c in cmd if c != "--show"]
@@ -881,10 +926,20 @@ class ImpacketTool(BaseTool):
                 # Fallback to simple split if shlex fails
                 cmd.extend(extra_args.split())
 
+        # Add sudo if configured (impacket usually doesn't need sudo, but keeping consistent)
+        # Note: Impacket scripts typically don't require sudo
+        # if self.config and self.config.use_sudo and "impacket" in self.config.sudo_tools:
+        #     cmd = ["sudo"] + cmd
+
         # Format command for display (mask password)
         cmd_display = " ".join(cmd)
         if password:
             cmd_display = cmd_display.replace(f":{password}@", ":***@")
+
+        # Ask for confirmation if configured
+        if self.config and self.config.confirm_commands:
+            if not confirm_execution(cmd_display, "impacket"):
+                return "Command skipped by user"
 
         try:
             result = subprocess.run(
@@ -1320,10 +1375,20 @@ class LdapsearchTool(BaseTool):
         if attrs:
             cmd.extend(attrs.replace(" ", "").split(","))
 
+        # Add sudo if configured (ldapsearch usually doesn't need sudo, but keeping consistent)
+        # Note: ldapsearch typically doesn't require sudo
+        # if self.config and self.config.use_sudo and "ldapsearch" in self.config.sudo_tools:
+        #     cmd = ["sudo"] + cmd
+
         # Format command for display (mask password)
         cmd_display = " ".join(cmd)
         if password:
             cmd_display = cmd_display.replace(password, "***")
+
+        # Ask for confirmation if configured
+        if self.config and self.config.confirm_commands:
+            if not confirm_execution(cmd_display, "ldapsearch"):
+                return "Command skipped by user"
 
         try:
             result = subprocess.run(
@@ -1507,6 +1572,16 @@ class BashExecutionTool(BaseTool):
         if any(d in command.lower() for d in dangerous):
             return f"BLOCKED: Command appears dangerous. Reason given: {reason}"
 
+        # Add sudo if configured (for bash, this would be dangerous but user controls it)
+        # Note: Not adding auto-sudo to bash for security reasons
+        # if self.config and self.config.use_sudo and "bash" in self.config.sudo_tools:
+        #     command = f"sudo {command}"
+
+        # Ask for confirmation if configured
+        if self.config and self.config.confirm_commands:
+            if not confirm_execution(command, "bash"):
+                return "Command skipped by user"
+
         try:
             result = subprocess.run(
                 command, shell=True, capture_output=True, text=True, timeout=60
@@ -1521,17 +1596,28 @@ class BashExecutionTool(BaseTool):
             return f"Error executing command: {str(e)}"
 
 
-# Tool registry
-AVAILABLE_TOOLS = {
-    "nmap": NmapScanTool(),
-    "netexec": NetExecTool(),
-    "impacket": ImpacketTool(),
-    "ldapsearch": LdapsearchTool(),
-    "hashcat": HashcatTool(),
-    "bash": BashExecutionTool(),
+# Tool registry - these are template instances
+_TOOL_CLASSES = {
+    "nmap": NmapScanTool,
+    "netexec": NetExecTool,
+    "impacket": ImpacketTool,
+    "ldapsearch": LdapsearchTool,
+    "hashcat": HashcatTool,
+    "bash": BashExecutionTool,
 }
 
 
-def get_tools(tool_names: List[str]) -> List[BaseTool]:
-    """Get tool instances by name"""
-    return [AVAILABLE_TOOLS[name] for name in tool_names if name in AVAILABLE_TOOLS]
+def get_tools(tool_names: List[str], config = None) -> List[BaseTool]:
+    """Get tool instances by name, with optional config
+    
+    Creates new instances each time to avoid shared state between calls.
+    """
+    tools = []
+    for name in tool_names:
+        if name in _TOOL_CLASSES:
+            # Create a new instance of the tool
+            tool = _TOOL_CLASSES[name]()
+            # Set config as a regular attribute (not a Pydantic field)
+            object.__setattr__(tool, 'config', config)
+            tools.append(tool)
+    return tools
