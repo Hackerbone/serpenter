@@ -18,9 +18,9 @@ SERPENTER: An Autonomous Pentesting Assistant for Active Directory Engagements
 ## 2. DESCRIPTION
 **A short paragraph describing your talk for the conference website**
 
-Manual AD pentesting is tedious—enumerate users, Kerberoast accounts, crack hashes, hunt ESC certificates, spray credentials, pivot laterally. Each step requires context from the previous one. What if an autonomous assistant could execute this entire workflow while you observe?
+Manual AD pentesting is tedious - enumerate users, Kerberoast accounts, crack hashes, hunt ESC certificates, spray credentials, pivot laterally. Each step requires context from the previous one. What if an autonomous assistant could execute this entire workflow while you observe?
 
-SERPENTER is an LLM orchestrator designed to streamline AD pentesting workflows. It uses Neo4j as persistent memory, chains tools through structured schemas (not hallucinated syntax), auto-detects failures and retries with corrected commands, and most importantly—executes complete attack chains, not just suggestions. Feed it discovered credentials or start from scratch; it handles the rest.
+SERPENTER is an LLM orchestrator designed to streamline AD pentesting workflows. It uses persistent memory, chains tools through structured schemas (not hallucinated syntax), auto-detects failures and retries with corrected commands, and most importantly, executes complete attack chains, not just suggestions. Feed it discovered credentials or start from scratch; it handles the rest.
 
 Live demo on GOAD showing end-to-end autonomous AD testing: user enumeration → Kerberoasting → hash cracking → ESC certificate hunting → lateral movement. Watch the tool chain operations, recover from errors, and adapt its approach in real-time. Open source, MIT licensed, built for real-world pentesting workflows.
 
@@ -31,59 +31,45 @@ Live demo on GOAD showing end-to-end autonomous AD testing: user enumeration →
 
 ### THE TOOL & WHAT IT DOES
 
-SERPENTER is an autonomous assistant designed to streamline AD pentesting workflows. It's not a chatbot that gives you suggestions—it's an orchestrator that executes complete attack chains while you observe and guide.
+SERPENTER is an autonomous assistant designed to streamline AD pentesting workflows. It's not a chatbot that gives you suggestions, it's an orchestrator that executes complete attack chains while you observe and guide.
 
 **What makes SERPENTER different:**
-- **Executes, doesn't just advise:** Other tools suggest next steps. SERPENTER runs the commands, parses output, and chains to the next action automatically.
-- **Intuitive thinking:** The LLM reasons about attack context—what's been discovered, what's been tried, what paths remain unexplored.
+- **Intuitive thinking:** The LLM reasons about attack context, what's been discovered, what's been tried, what paths remain unexplored.
 - **Smart chaining:** Output from one tool feeds directly into the next. Kerberoasted hash → hashcat → cracked credential → lateral movement. No manual copy-pasting.
 - **Schema-enforced accuracy:** Commands are built programmatically through Pydantic schemas, not generated as raw strings. The LLM selects parameters; the tool wrapper builds the correct syntax.
 - **Auto-recovery from failures:** When a command fails, structured error output feeds back to the LLM, which analyzes the failure and generates a corrected approach.
 - **Flexible entry points:** Start from scratch with just an IP range, or provide discovered credentials and continue from there.
-- **Neo4j memory:** Graph database maintains complete attack state—every finding, every attempt, every relationship. Resume weeks later with full context.
+- **In-built memory:** A graph database designed to maintain the complete attack state, every finding, every attempt, every relationship. Resume weeks later with full context.
 
-This talk showcases SERPENTER as a practical autonomous assistant for AD pentesters and security engineers—demonstrating how structured LLM orchestration with persistent memory transforms pentesting workflows.
+This talk showcases SERPENTER as a practical autonomous assistant for AD pentesters and security engineers, demonstrating how structured LLM orchestration with persistent memory transforms pentesting workflows.
 
 ### SERPENTER ARCHITECTURE
 
-**Layer 1: LLM Orchestrator with ReAct Pattern**
+**Layer 1: LLM Orchestrator which uses ReAct**
 - Reasoning about attack context and next steps
-- Automatic tool chaining—output flows seamlessly between operations
+- Automatic tool chaining, output flows seamlessly between operations
 - Streaming execution with real-time feedback
-- Multi-provider LLM support: Groq (free), Claude, GPT-4, Ollama
+- Multi-provider LLM support: Groq, Claude, GPT-4, and local LLMs like Ollama
 
-**Layer 2: Neo4j Graph Memory**
+**Layer 2: Stateful Graph Memory**
 - Persistent storage of complete AD attack state
 - Nodes: User, Computer, Group, Credential, Certificate, Finding, Session
 - Relationships: MemberOf, HasSPN, AdminTo, CanPSRemote, TrustedBy, CrackedFrom, TriedOn, VulnerableTo
 - Feeds context back into LLM for informed decision-making
 - Session persistence: pick up exactly where you left off
 
-**Layer 3: Schema-Enforced Tool Wrappers (Anti-Hallucination)**
-- **Pydantic input schemas** for every tool—LLM can only provide valid parameters
-- **Programmatic command building**—not string concatenation from LLM output
-- **Preset query patterns**—LDAP filters, action maps, script variants are hardcoded
-- **Structured output parsing**—tool output is parsed and formatted for LLM consumption
-- **Error classification**—failures return structured messages the LLM can act on
+**Layer 3: Schema-Enforced Tools for the AI Agent (Anti-Hallucination)**
+- **Pydantic input schemas** for every tool, LLM can only provide valid parameters
+- **Programmatic command building**, not string concatenation from LLM output
+- **Preset query patterns**, LDAP filters, action maps, script variants are hardcoded
+- **Structured output parsing**, tool output is parsed and formatted for LLM consumption
+- **Error classification**, failures return structured messages the LLM can act on
 
-**How Hallucination is Prevented (Technical Detail):**
-
-```python
-# LLM doesn't generate: "netexec smb 192.168.1.0/24 --usres"  (typo)
-# LLM provides structured input via Pydantic schema:
-class NetExecInput(BaseModel):
-    target: str = Field(description="Target IP or subnet")
-    protocol: str = Field(default="smb")  # Validated against allowed values
-    action: str = Field(default=None)     # Mapped to correct flags internally
-
-# Tool wrapper builds the command programmatically:
-cmd = ["netexec", protocol, target]  # Never hallucinated
-action_flag = action_map.get(protocol, {}).get(action)  # Lookup, not generation
-if action_flag:
-    cmd.append(action_flag)  # --users, --shares, etc.
-```
+**How Hallucination is Prevented:**
 
 The LLM selects *what* to do (protocol, action, target). The tool wrapper builds *how* to do it correctly.
+
+Essentially giving the model an understanding of the tool makes it return deterministic outputs.
 
 ### TALK FLOW (20 minutes + 10 min Q&A)
 
@@ -94,7 +80,7 @@ The LLM selects *what* to do (protocol, action, target). The tool wrapper builds
 - *Quick setup to show why SERPENTER exists*
 
 **Minutes 3-8: SERPENTER Tool Showcase - Anti-Hallucination Architecture**
-- **Architecture overview:** LLM orchestrator + Neo4j memory + schema-enforced tool wrappers
+- **Architecture overview:** LLM orchestrator + In-built memory + schema-enforced tool wrappers
   
 - **How we prevent hallucination (live code walkthrough):**
   - **Pydantic schemas:** LLM provides structured parameters, not raw command strings
@@ -108,16 +94,16 @@ The LLM selects *what* to do (protocol, action, target). The tool wrapper builds
   - Certipy (ESC1-ESC8 certificate abuse)
   - BloodHound integration, Hashcat, nmap, ldapsearch
   
-- **Neo4j as memory:** Quick view of attack state graph—users, credentials, relationships all tracked
+- **Neo4j as memory:** Quick view of attack state graph, users, credentials, relationships all tracked
 
 **Minutes 8-16: Live Demo - End-to-End AD Pentest on GOAD**
 - **Scenario 1: Starting from scratch**
   - Give SERPENTER only a target IP range
-  - Watch autonomous execution: network scan → user enumeration → Kerberoasting → hash cracking → credential use
-  - Each step chains automatically—no manual intervention
+  - Watch autonomous execution: network scan → enumeration → inital access → privilege escalation
+  - Each step chains automatically, no manual intervention
   
-- **Scenario 2: Starting with credentials (flexible entry point)**
-  - Provide discovered credentials as entry point
+- **Scenario 2: Starting with user-driven input (flexible entry point)**
+  - Provide discovered credentials/tickets or any nudge to move forward as an entry point
   - SERPENTER continues from there: lateral movement, privilege escalation, further enumeration
   
 - **Scenario 3: ESC Certificate Hunting**
@@ -138,7 +124,7 @@ The LLM selects *what* to do (protocol, action, target). The tool wrapper builds
   LLM executes: ldapsearch with anonymous=True
   ```
   
-- **Key point:** Errors don't halt execution—they inform the next decision
+- **Key point:** Errors don't halt execution, they inform the next decision
 
 **Minutes 18-20: Practical Use Cases & Limitations**
 - **Who this helps:**
@@ -173,13 +159,13 @@ This isn't a theoretical framework or proof-of-concept. SERPENTER is a working t
 - **Execution over advice:** LLMs that suggest steps are common. LLMs that execute multi-step attack chains are rare.
 - **Anti-hallucination by design:** Pydantic schemas + programmatic command building = correct syntax every time.
 - **Auto-recovery:** Structured error feedback enables the LLM to adapt and retry with corrected approaches.
-- **Persistent memory:** Neo4j ensures nothing is forgotten across sessions.
+- **Persistent memory:** A stateful memory ensures nothing is forgotten across sessions.
 
 **Why pentesters should care:**
 - Automates the tedious parts of AD testing (enumeration, spraying, hash collection)
-- Commands are built correctly—no more fixing hallucinated tool syntax
-- Failures don't stop execution—they inform the next decision
-- Start anywhere: from scratch or with discovered credentials
+- Commands are built correctly, no more fixing hallucinated tool syntax
+- Failures don't stop execution, they inform the next decision
+- Start anywhere: from scratch or from at any point while conducting pentesting
 
 **Addressing the "LLMs hallucinate syntax" concern:**
 - LLM never generates raw command strings
@@ -193,7 +179,7 @@ This isn't a theoretical framework or proof-of-concept. SERPENTER is a working t
 - Anti-hallucination patterns shown in action
 - Error recovery demonstrated live
 - Honest about limitations
-- MIT licensed—use it, extend it, contribute back
+- MIT licensed, use it, extend it, contribute back
 
 ### KEY TAKEAWAYS
 
@@ -221,7 +207,7 @@ All demos are live with backup recordings:
 
 ### THE BOTTOM LINE
 
-AD pentesting involves tedious, repetitive workflows: enumerate users, find Kerberoastable accounts, crack hashes, hunt vulnerable certificates, spray credentials, move laterally. SERPENTER automates these chains with an LLM orchestrator that executes—not just advises.
+AD pentesting involves tedious, repetitive workflows: enumerate users, find Kerberoastable accounts, crack hashes, hunt vulnerable certificates, spray credentials, move laterally. SERPENTER automates these chains with an LLM orchestrator that executes, not just advises.
 
 The tool features schema-enforced command building (no hallucinated syntax), automatic error recovery, intelligent chaining, and Neo4j-backed memory. Start from scratch or provide credentials; it handles the rest.
 
@@ -254,11 +240,14 @@ Leading Product Development, Security & Compliance
 - Built BugBase (Bug Bounty Platform) from ground up
 - Active open-source contributor
 
+**Kathan Desai**  
+<insert blurb>
+
 ### SERPENTER: HOW IT WORKS
 
 **The Orchestration Loop:**
 
-SERPENTER's power comes from its ability to chain operations intelligently while maintaining complete attack context—and recovering from failures automatically.
+SERPENTER's power comes from its ability to chain operations intelligently while maintaining complete attack context, and recovering from failures automatically.
 
 **How tool chaining works:**
 1. User provides goal: "Find path to Domain Admin" or "Kerberoast and crack accounts"
@@ -292,7 +281,7 @@ class ImpacketInput(BaseModel):
     domain: Optional[str]
     # LLM fills these fields; wrapper builds: secretsdump.py domain/user@target
 
-# Script names resolved via lookup table—no typos possible:
+# Script names resolved via lookup table, no typos possible:
 SCRIPT_VARIANTS = {
     "secretsdump": "secretsdump.py",
     "getuserspns": "GetUserSPNs.py",  # Correct casing
@@ -312,7 +301,7 @@ SCRIPT_VARIANTS = {
 - **With credentials:** Provide domain\user:password, continue from authenticated enumeration
 - **Mid-engagement:** Import BloodHound data, continue with context
 
-This is what makes SERPENTER an autonomous assistant, not just another AI chatbot—it works alongside pentesters, handling execution while they guide strategy.
+This is what makes SERPENTER an autonomous assistant, not just another AI chatbot, it works alongside pentesters, handling execution while they guide strategy.
 
 ### TECHNICAL DEPTH AVAILABLE
 
@@ -325,7 +314,7 @@ The talk provides detailed coverage of:
 - **Neo4j schema:** Attack state storage, relationships, and query patterns
 - **Chaining mechanics:** How parsed output feeds context into next decision
 - **Adding custom tools:** Pattern for creating new tool wrappers with Pydantic schemas
-- **Multi-LLM support:** Groq (free), Claude, GPT-4, Ollama—comparative observations
+- **Multi-LLM support:** Groq (free), Claude, GPT-4, Ollama, comparative observations
 
 **Prepared to demonstrate and discuss:**
 - Why LLM never generates raw command strings
