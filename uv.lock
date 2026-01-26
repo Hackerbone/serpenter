@@ -1883,6 +1883,7 @@ name = "serpenter"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "certipy-ad" },
     { name = "click" },
     { name = "langchain" },
     { name = "langchain-anthropic" },
@@ -1900,6 +1901,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "certipy-ad", specifier = ">=4.8.2" },
     { name = "click", specifier = ">=8.3.1" },
     { name = "langchain", specifier = ">=1.2.7" },
     { name = "langchain-anthropic", specifier = ">=1.3.1" },

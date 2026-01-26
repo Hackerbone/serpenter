@@ -49,6 +49,7 @@ tools:
     - impacket
     - ldapsearch
     - hashcat
+    - certipy
     - bash
   
   # Run certain tools with sudo privileges automatically

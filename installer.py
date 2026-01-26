@@ -52,6 +52,11 @@ class ToolInstaller:
                 self.install_hashcat,
                 "hashcat"
             ),
+            "certipy": (
+                "Active Directory certificate abuse toolkit",
+                self.install_certipy,
+                "certipy"
+            ),
         }
 
     def detect_package_manager(self) -> Optional[str]:
@@ -193,6 +198,27 @@ class ToolInstaller:
                 self.run_command(["pipx", "ensurepath"], use_sudo=False)
         
         return self.install_python_tool("impacket", use_pipx=True)
+
+    def install_certipy(self) -> Tuple[bool, str]:
+        """Install Certipy-AD"""
+        console.print("[cyan]Installing Certipy-AD for Active Directory certificate abuse...[/cyan]")
+        
+        # Try pipx first
+        if shutil.which("pipx"):
+            console.print("[cyan]Attempting installation via pipx...[/cyan]")
+            success, output = self.run_command(
+                ["pipx", "install", "certipy-ad"],
+                use_sudo=False
+            )
+            if success:
+                return True, "Certipy-AD installed via pipx"
+        
+        # Fallback to pip
+        console.print("[cyan]Attempting installation via pip...[/cyan]")
+        return self.run_command(
+            ["pip3", "install", "--user", "certipy-ad"],
+            use_sudo=False
+        )
 
     def get_tool_status(self) -> Dict[str, bool]:
         """Get installation status of all tools"""

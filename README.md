@@ -126,6 +126,14 @@ serpenter run "find potential privilege escalation paths"
 serpenter run "identify misconfigured shares containing credentials"
 ```
 
+### Certificate Attacks (AD CS)
+```bash
+serpenter run "enumerate vulnerable certificate templates on 10.0.0.10"
+serpenter run "perform ESC1 attack using vulnerable template"
+serpenter run "add shadow credentials to target account"
+serpenter run "find all AD CS misconfigurations in the domain"
+```
+
 ## 🔧 Configuration
 
 SERPENTER uses a YAML configuration file for flexibility. See [config.examples.md](config.examples.md) for detailed examples.
@@ -194,6 +202,39 @@ Multi-protocol enumeration supporting:
 - **RDP**: access testing
 - **SSH**: authentication testing
 - And more...
+
+### impacket
+Python-based AD exploitation toolkit:
+- **secretsdump**: Extract credentials from SAM/NTDS
+- **GetUserSPNs**: Kerberoasting attacks
+- **GetNPUsers**: AS-REP roasting
+- **psexec/wmiexec**: Remote code execution
+- And many more Impacket scripts
+
+### ldapsearch
+LDAP enumeration for Active Directory:
+- Enumerate users, computers, groups
+- Find privileged accounts
+- Discover Kerberoastable accounts
+- Identify AS-REP roastable users
+- Query GPOs and domain trusts
+
+### hashcat
+Password cracking:
+- NTLM hashes
+- NetNTLMv2
+- Kerberoast tickets
+- AS-REP hashes
+
+### certipy
+Active Directory Certificate Services (AD CS) attacks:
+- **find**: Enumerate certificate templates and identify vulnerabilities (ESC1-8)
+- **req**: Request certificates from templates
+- **auth**: Authenticate using certificates to obtain NTLM hashes/TGT
+- **shadow**: Shadow credentials attacks
+- **ca**: Dump CA certificates and keys
+- **forge**: Create golden certificates
+- Support for all major AD CS attack scenarios
 
 ### bash_execute
 Execute custom bash commands (with safety checks)
@@ -273,7 +314,7 @@ Built with:
 - [Anthropic Claude](https://www.anthropic.com/) / [Groq](https://groq.com/) / [OpenAI](https://openai.com/)
 - [Rich](https://github.com/Textualize/rich) for beautiful terminal output
 - [Click](https://click.palletsprojects.com/) for CLI
-- Network tools: nmap, netexec
+- Security tools: nmap, netexec, impacket, certipy, hashcat, ldapsearch
 
 ---
 
