@@ -1584,10 +1584,6 @@ class CertipyInput(BaseModel):
         default=None,
         description="PFX certificate password"
     )
-    output: Optional[str] = Field(
-        default=None,
-        description="Output file for results (JSON, TXT, ZIP)"
-    )
     extra_args: Optional[str] = Field(
         default=None,
         description="Additional certipy arguments (e.g., '-vulnerable', '-old-bloodhound', '-enabled')"
@@ -1616,6 +1612,7 @@ class CertipyTool(BaseTool):
          Extra: extra_args="-vulnerable" (only show vulnerable templates)
                 extra_args="-old-bloodhound" (output for BloodHound)
                 extra_args="-enabled" (only enabled templates)
+         Note: Results are automatically saved to JSON files in current directory
     
     2. CERTIFICATE REQUEST (ESC1, ESC2, ESC3):
        - req: Request a certificate from a template
@@ -1623,6 +1620,7 @@ class CertipyTool(BaseTool):
                   ca="corp-DC-CA", template="User", dc_ip="192.168.1.10"
          For ESC1 (UPN spoofing): upn="administrator@corp.local"
          For computer accounts: dns="dc.corp.local"
+         Note: Certificates are automatically saved as PFX files in current directory
     
     3. AUTHENTICATION WITH CERTIFICATE:
        - auth: Authenticate using a PFX certificate to get NTLM hash/TGT
@@ -1672,11 +1670,11 @@ class CertipyTool(BaseTool):
     3. Authenticate with certificate: action="auth", pfx="administrator.pfx"
     4. Use obtained NTLM hash or TGT for further attacks
     
-    OUTPUT:
-    - JSON files contain detailed enumeration data
-    - PFX files are certificates for authentication
-    - ZIP files contain CA backups
-    - Use output parameter to specify custom output filename
+    NOTE: Certipy automatically saves output files:
+    - find: Generates JSON files with enumeration data (e.g., 20240127120000_Certipy.json)
+    - req: Generates PFX certificate files (e.g., administrator.pfx)
+    - auth: Generates .ccache files for Kerberos tickets
+    - All files are saved in the current working directory
     """
     args_schema: type[BaseModel] = CertipyInput
 
@@ -1695,7 +1693,6 @@ class CertipyTool(BaseTool):
         dns: Optional[str] = None,
         pfx: Optional[str] = None,
         pfx_password: Optional[str] = None,
-        output: Optional[str] = None,
         extra_args: Optional[str] = None,
     ) -> str:
         """Execute Certipy action"""
@@ -1759,13 +1756,6 @@ class CertipyTool(BaseTool):
             cmd.extend(["-pfx", pfx])
             if pfx_password:
                 cmd.extend(["-pfx-password", pfx_password])
-
-        # Output file
-        if output:
-            cmd.extend(["-output", output])
-        elif action in ["find", "req", "shadow", "ca"]:
-            # Auto-generate output filename for actions that produce files
-            cmd.extend(["-output", f"certipy_{action}"])
 
         # Extra arguments
         if extra_args:
