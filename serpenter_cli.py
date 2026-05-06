@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 from agent import SerpenterAgent
+from assessment import InternalAssessmentRunner
 from config import Config
 
 console = Console()
@@ -97,6 +98,80 @@ def run(objective, target, auto, debug, sudo, confirm, config):
             agent.execute_objective(objective_text)
     except KeyboardInterrupt:
         console.print("\n[yellow]Operation cancelled by user[/yellow]")
+        sys.exit(0)
+    except Exception as e:
+        console.print(f"\n[red]Error: {e}[/red]")
+        if debug:
+            console.print_exception()
+        sys.exit(1)
+
+@cli.command("internal-assessment")
+@click.argument("target")
+@click.option("--domain", help="AD domain name, e.g. corp.local")
+@click.option("--username", "-u", help="Username for authenticated enumeration")
+@click.option("--password", "-p", help="Password for authenticated enumeration")
+@click.option("--hashes", help="NTLM hashes for pass-the-hash style auth, e.g. :NT_HASH")
+@click.option("--dc-ip", help="Domain Controller IP/hostname. Defaults to target.")
+@click.option("--base-dn", help="LDAP base DN, e.g. DC=corp,DC=local. Derived from --domain when possible.")
+@click.option("--allow-exploits", is_flag=True, help="Enable active exploit validation steps. Off by default.")
+@click.option("--no-ai", is_flag=True, help="Disable LLM synthesis and use deterministic summary only.")
+@click.option("--output", "-o", type=click.Path(), help="Write JSON report to this path")
+@click.option("--debug", is_flag=True, help="Enable debug mode")
+@click.option("--sudo", is_flag=True, help="Run configured tools with sudo privileges")
+@click.option("--confirm", is_flag=True, help="Ask for confirmation before executing commands")
+@click.option("--config", "-c", help="Path to config file", type=click.Path(exists=True))
+def internal_assessment(
+    target,
+    domain,
+    username,
+    password,
+    hashes,
+    dc_ip,
+    base_dn,
+    allow_exploits,
+    no_ai,
+    output,
+    debug,
+    sudo,
+    confirm,
+    config,
+):
+    """Run a full Serpenter-native internal assessment.
+
+    The report follows Bugbase-style concepts: entities, findings, attack paths,
+    evidence, and analyst summary. Exploit validation is disabled unless
+    --allow-exploits is set.
+    """
+
+    console.print(BANNER, style="bold cyan")
+
+    agent_config = Config.from_yaml(Path(config) if config else None, require_llm=False)
+    if debug:
+        agent_config.debug = True
+    if sudo:
+        agent_config.use_sudo = True
+    if confirm:
+        agent_config.confirm_commands = True
+    if no_ai:
+        agent_config.assessment_ai_synthesis = False
+
+    effective_allow_exploits = allow_exploits or agent_config.assessment_allow_exploits
+    runner = InternalAssessmentRunner(agent_config)
+
+    try:
+        runner.run(
+            target,
+            domain=domain,
+            username=username,
+            password=password,
+            hashes=hashes,
+            dc_ip=dc_ip,
+            base_dn=base_dn,
+            allow_exploits=effective_allow_exploits,
+            output_path=Path(output) if output else None,
+        )
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Internal assessment cancelled by user[/yellow]")
         sys.exit(0)
     except Exception as e:
         console.print(f"\n[red]Error: {e}[/red]")

@@ -87,3 +87,12 @@ output:
   # Save results to file
   save_results: false
   results_dir: "./results"
+
+# Full-scale internal assessment mode
+assessment:
+  # Use the configured LLM to synthesize impact, confidence, and next steps
+  ai_synthesis: true
+
+  # Keep active exploit validation disabled unless explicitly enabled by config
+  # or by passing --allow-exploits to the CLI.
+  allow_exploits: false

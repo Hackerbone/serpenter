@@ -1,0 +1,675 @@
+"""
+SERPENTER internal assessment runner.
+
+This is intentionally not a clone of Bugbase's entity/submodule queue. It keeps
+the output shape similar while using Serpenter's AI-first, tool-native runtime.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from langchain_core.messages import HumanMessage, SystemMessage
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+from config import Config
+from tools import get_tools
+
+
+console = Console()
+
+
+COMMON_INTERNAL_PORTS = "21,22,53,88,135,139,389,445,464,593,636,1433,3306,3389,5985,5986,9389"
+
+
+@dataclass
+class Evidence:
+    phase: str
+    tool: str
+    objective: str
+    status: str
+    output: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Entity:
+    entity_type: str
+    identifier: str
+    properties: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Finding:
+    vuln_name: str
+    vuln_type: str
+    severity: str
+    target: str
+    description: str
+    evidence_refs: List[int] = field(default_factory=list)
+    remediation: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class AttackPath:
+    name: str
+    severity: str
+    nodes: List[Dict[str, Any]]
+    relationships: List[Dict[str, Any]]
+    finding_index: Optional[int] = None
+
+
+@dataclass
+class AssessmentReport:
+    target: str
+    started_at: str
+    completed_at: str = ""
+    mode: str = "ai_native_internal_assessment"
+    status: str = "running"
+    entities: List[Entity] = field(default_factory=list)
+    findings: List[Finding] = field(default_factory=list)
+    attack_paths: List[AttackPath] = field(default_factory=list)
+    evidence: List[Evidence] = field(default_factory=list)
+    ai_summary: str = ""
+    next_steps: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+class InternalAssessmentRunner:
+    """Full-scale internal assessment flow using Serpenter's tool wrappers."""
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.console = Console()
+        self.tools = {tool.name: tool for tool in get_tools(config.tools_enabled, config)}
+
+    def run(
+        self,
+        target: str,
+        *,
+        domain: Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        hashes: Optional[str] = None,
+        dc_ip: Optional[str] = None,
+        base_dn: Optional[str] = None,
+        allow_exploits: bool = False,
+        output_path: Optional[Path] = None,
+    ) -> AssessmentReport:
+        started_at = datetime.now(timezone.utc).isoformat()
+        report = AssessmentReport(target=target, started_at=started_at)
+
+        self.console.print(
+            Panel(
+                f"[bold]{target}[/bold]\n"
+                f"Domain: [cyan]{domain or 'auto/unknown'}[/cyan]\n"
+                f"Exploit validation: [{'yellow' if allow_exploits else 'green'}]"
+                f"{'enabled' if allow_exploits else 'disabled'}[/]",
+                title="Internal Assessment",
+                border_style="green",
+            )
+        )
+
+        resolved_dc = dc_ip or target
+        resolved_base_dn = base_dn or self._domain_to_base_dn(domain)
+
+        self._phase_discovery(report, target)
+        self._phase_service_enumeration(report, target, username, password)
+        self._phase_identity_and_ad(
+            report,
+            target=target,
+            domain=domain,
+            username=username,
+            password=password,
+            hashes=hashes,
+            dc_ip=resolved_dc,
+            base_dn=resolved_base_dn,
+        )
+        self._phase_attack_surface(
+            report,
+            domain=domain,
+            username=username,
+            password=password,
+            hashes=hashes,
+            dc_ip=resolved_dc,
+            allow_exploits=allow_exploits,
+        )
+
+        self._derive_entities_and_findings(report)
+        self._build_attack_paths(report)
+        self._synthesize_with_ai(report)
+
+        report.completed_at = datetime.now(timezone.utc).isoformat()
+        report.status = "completed"
+        if output_path or self.config.save_results:
+            self._write_report(report, output_path)
+        self._print_report_summary(report)
+        return report
+
+    def _phase_discovery(self, report: AssessmentReport, target: str) -> None:
+        self._record_tool(
+            report,
+            phase="discovery",
+            tool_name="nmap_scan",
+            objective="Discover live hosts",
+            kwargs={"target": target, "scan_type": "quick"},
+        )
+        self._record_tool(
+            report,
+            phase="discovery",
+            tool_name="nmap_scan",
+            objective="Identify common internal services",
+            kwargs={"target": target, "ports": COMMON_INTERNAL_PORTS, "scan_type": "service"},
+        )
+
+    def _phase_service_enumeration(
+        self,
+        report: AssessmentReport,
+        target: str,
+        username: Optional[str],
+        password: Optional[str],
+    ) -> None:
+        for action in ("users", "shares", "pass-pol"):
+            self._record_tool(
+                report,
+                phase="service_enumeration",
+                tool_name="netexec",
+                objective=f"Enumerate SMB {action}",
+                kwargs={
+                    "target": target,
+                    "protocol": "smb",
+                    "action": action,
+                    "username": username,
+                    "password": password,
+                },
+            )
+
+        self._record_tool(
+            report,
+            phase="service_enumeration",
+            tool_name="netexec",
+            objective="Enumerate LDAP computers",
+            kwargs={
+                "target": target,
+                "protocol": "ldap",
+                "action": "computers",
+                "username": username,
+                "password": password,
+            },
+        )
+
+    def _phase_identity_and_ad(
+        self,
+        report: AssessmentReport,
+        *,
+        target: str,
+        domain: Optional[str],
+        username: Optional[str],
+        password: Optional[str],
+        hashes: Optional[str],
+        dc_ip: str,
+        base_dn: Optional[str],
+    ) -> None:
+        if not base_dn:
+            report.next_steps.append("Provide --domain or --base-dn to enable LDAP AD object queries.")
+            return
+
+        for query_type in ("users", "groups", "admins", "spns", "asrep", "trusts"):
+            self._record_tool(
+                report,
+                phase="identity_and_ad",
+                tool_name="ldapsearch",
+                objective=f"LDAP query: {query_type}",
+                kwargs={
+                    "target": dc_ip or target,
+                    "base_dn": base_dn,
+                    "query_type": query_type,
+                    "username": self._ldap_bind_user(domain, username),
+                    "password": password,
+                },
+            )
+
+        if username and (password or hashes):
+            self._record_tool(
+                report,
+                phase="identity_and_ad",
+                tool_name="impacket",
+                objective="Enumerate Kerberoastable SPNs without requesting tickets",
+                kwargs={
+                    "script": "GetUserSPNs",
+                    "target": dc_ip or target,
+                    "domain": domain,
+                    "username": username,
+                    "password": password,
+                    "hashes": hashes,
+                    "dc_ip": dc_ip,
+                },
+            )
+
+    def _phase_attack_surface(
+        self,
+        report: AssessmentReport,
+        *,
+        domain: Optional[str],
+        username: Optional[str],
+        password: Optional[str],
+        hashes: Optional[str],
+        dc_ip: str,
+        allow_exploits: bool,
+    ) -> None:
+        if username and password and domain:
+            self._record_tool(
+                report,
+                phase="adcs",
+                tool_name="certipy",
+                objective="Enumerate AD CS templates and vulnerable certificate paths",
+                kwargs={
+                    "action": "find",
+                    "target": dc_ip,
+                    "username": username,
+                    "password": password,
+                    "domain": domain,
+                    "dc_ip": dc_ip,
+                    "extra_args": "-vulnerable -stdout",
+                },
+            )
+
+        if not allow_exploits:
+            report.next_steps.append(
+                "Run again with --allow-exploits to actively request roastable tickets or perform exploit validation."
+            )
+            return
+
+        if username and (password or hashes) and domain:
+            self._record_tool(
+                report,
+                phase="exploit_validation",
+                tool_name="impacket",
+                objective="Request Kerberoast tickets for validated cracking workflow",
+                kwargs={
+                    "script": "GetUserSPNs",
+                    "target": dc_ip,
+                    "domain": domain,
+                    "username": username,
+                    "password": password,
+                    "hashes": hashes,
+                    "dc_ip": dc_ip,
+                    "extra_args": "-request -outputfile serpenter_kerberoast.txt",
+                },
+            )
+
+    def _record_tool(
+        self,
+        report: AssessmentReport,
+        *,
+        phase: str,
+        tool_name: str,
+        objective: str,
+        kwargs: Dict[str, Any],
+    ) -> None:
+        tool = self.tools.get(tool_name)
+        if not tool:
+            report.evidence.append(
+                Evidence(
+                    phase=phase,
+                    tool=tool_name,
+                    objective=objective,
+                    status="skipped",
+                    output=f"Tool '{tool_name}' is not enabled in config.",
+                )
+            )
+            return
+
+        self.console.print(f"[dim]Running {phase}: {objective}[/dim]")
+        try:
+            cleaned_kwargs = {key: value for key, value in kwargs.items() if value is not None}
+            output = tool._run(**cleaned_kwargs)
+            status = "ok"
+            if self._looks_like_tool_failure(output):
+                status = "failed"
+        except Exception as exc:
+            output = f"{type(exc).__name__}: {exc}"
+            status = "failed"
+
+        report.evidence.append(
+            Evidence(
+                phase=phase,
+                tool=tool_name,
+                objective=objective,
+                status=status,
+                output=str(output),
+                metadata={"args": self._redact(cleaned_kwargs if "cleaned_kwargs" in locals() else kwargs)},
+            )
+        )
+
+    def _derive_entities_and_findings(self, report: AssessmentReport) -> None:
+        seen_entities = set()
+        seen_findings = set()
+
+        def add_entity(entity_type: str, identifier: str, **properties: Any) -> None:
+            key = (entity_type, identifier)
+            if identifier and key not in seen_entities:
+                seen_entities.add(key)
+                report.entities.append(Entity(entity_type, identifier, properties))
+
+        def add_finding(
+            name: str,
+            vuln_type: str,
+            severity: str,
+            target: str,
+            description: str,
+            evidence_index: int,
+            remediation: str,
+            **metadata: Any,
+        ) -> None:
+            key = (vuln_type, target, name)
+            if target and key not in seen_findings:
+                seen_findings.add(key)
+                report.findings.append(
+                    Finding(
+                        vuln_name=name,
+                        vuln_type=vuln_type,
+                        severity=severity,
+                        target=target,
+                        description=description,
+                        evidence_refs=[evidence_index],
+                        remediation=remediation,
+                        metadata=metadata,
+                    )
+                )
+
+        for idx, evidence in enumerate(report.evidence):
+            output = evidence.output
+            for host in self._extract_hosts(output):
+                add_entity("Host", host, source_phase=evidence.phase)
+
+            for port, service, host in self._extract_services(output):
+                identifier = f"{host or report.target}:{port}/{service}"
+                add_entity("Service", identifier, host=host or report.target, port=port, service=service)
+
+            if "ACCESSIBLE SHARES" in output or re.search(r"\bREAD\b|\bWRITE\b", output):
+                target = self._target_from_command(output) or report.target
+                add_finding(
+                    "Accessible SMB share discovered",
+                    "SMB_SHARE_EXPOSURE",
+                    "medium",
+                    target,
+                    "SMB share enumeration returned readable or writable shares.",
+                    idx,
+                    "Restrict share permissions, remove broad read/write grants, and audit sensitive files.",
+                )
+
+            if "Pwn3d!" in output or "[ADMIN]" in output:
+                target = self._target_from_command(output) or report.target
+                add_finding(
+                    "Administrative network access validated",
+                    "PRIVILEGED_AUTH",
+                    "high",
+                    target,
+                    "The supplied credential appears to have administrative access on at least one service.",
+                    idx,
+                    "Rotate the credential if unexpected, reduce local admin reach, and enforce tiered administration.",
+                )
+
+            if "$krb5tgs$" in output or "SERVICE PRINCIPAL NAMES" in output:
+                target = self._target_from_command(output) or report.target
+                add_finding(
+                    "Kerberoastable service account exposure",
+                    "KERBEROASTING",
+                    "high",
+                    target,
+                    "Service principal names were found and may allow offline password cracking.",
+                    idx,
+                    "Use long random service account passwords or gMSA, and monitor TGS request anomalies.",
+                )
+
+            if "$krb5asrep$" in output or "DONT_REQUIRE_PREAUTH" in output:
+                target = self._target_from_command(output) or report.target
+                add_finding(
+                    "AS-REP roastable user exposure",
+                    "ASREP_ROAST",
+                    "high",
+                    target,
+                    "One or more accounts appear to have Kerberos pre-authentication disabled.",
+                    idx,
+                    "Enable Kerberos pre-authentication and rotate affected account passwords.",
+                )
+
+            if "ESC" in output and "Certipy" in output or "Vulnerabilities" in output and "Certificate" in output:
+                target = self._target_from_command(output) or report.target
+                add_finding(
+                    "Potential AD CS certificate abuse path",
+                    "ADCS_MISCONFIGURATION",
+                    "critical",
+                    target,
+                    "Certificate Services enumeration indicated potentially vulnerable template or CA settings.",
+                    idx,
+                    "Review template enrollment rights, EKUs, manager approval, SAN supply, and CA web enrollment exposure.",
+                )
+
+            if "Anonymous" in output or "null session" in output.lower():
+                target = self._target_from_command(output) or report.target
+                add_finding(
+                    "Anonymous or null-session exposure",
+                    "ANONYMOUS_ACCESS",
+                    "medium",
+                    target,
+                    "Enumeration output indicates possible anonymous access.",
+                    idx,
+                    "Disable anonymous enumeration and verify SMB/LDAP null-session restrictions.",
+                )
+
+    def _build_attack_paths(self, report: AssessmentReport) -> None:
+        for index, finding in enumerate(report.findings):
+            entry = {"label": "Target", "id": report.target, "properties": {"scope": report.target}}
+            vuln = {
+                "label": "Vulnerability",
+                "id": f"finding-{index + 1}",
+                "properties": {
+                    "vuln_name": finding.vuln_name,
+                    "vuln_type": finding.vuln_type,
+                    "severity": finding.severity,
+                    "target": finding.target,
+                },
+            }
+            evidence_nodes = [
+                {
+                    "label": "Evidence",
+                    "id": f"evidence-{ref}",
+                    "properties": {
+                        "phase": report.evidence[ref].phase,
+                        "tool": report.evidence[ref].tool,
+                        "objective": report.evidence[ref].objective,
+                    },
+                }
+                for ref in finding.evidence_refs
+                if 0 <= ref < len(report.evidence)
+            ]
+            nodes = [entry] + evidence_nodes + [vuln]
+            relationships = []
+            previous = entry["id"]
+            for node in evidence_nodes:
+                relationships.append({"source": previous, "target": node["id"], "type": "OBSERVED_BY"})
+                previous = node["id"]
+            relationships.append({"source": previous, "target": vuln["id"], "type": finding.vuln_type})
+            report.attack_paths.append(
+                AttackPath(
+                    name=finding.vuln_name,
+                    severity=finding.severity,
+                    nodes=nodes,
+                    relationships=relationships,
+                    finding_index=index,
+                )
+            )
+
+    def _synthesize_with_ai(self, report: AssessmentReport) -> None:
+        if not getattr(self.config, "assessment_ai_synthesis", True):
+            report.ai_summary = self._fallback_summary(report)
+            return
+
+        try:
+            llm = self.config.get_llm()
+            evidence_preview = [
+                {
+                    "phase": item.phase,
+                    "tool": item.tool,
+                    "objective": item.objective,
+                    "status": item.status,
+                    "output": item.output[:1800],
+                }
+                for item in report.evidence[-12:]
+            ]
+            prompt = {
+                "target": report.target,
+                "entities": [asdict(item) for item in report.entities[:80]],
+                "findings": [asdict(item) for item in report.findings],
+                "evidence_preview": evidence_preview,
+            }
+            response = llm.invoke(
+                [
+                    SystemMessage(
+                        content=(
+                            "You are SERPENTER's internal assessment analyst. "
+                            "Summarize impact, confidence, and prioritized next steps. "
+                            "Do not invent findings that are not supported by evidence."
+                        )
+                    ),
+                    HumanMessage(content=json.dumps(prompt, indent=2)),
+                ]
+            )
+            report.ai_summary = str(response.content)
+        except Exception as exc:
+            report.ai_summary = f"{self._fallback_summary(report)}\n\nAI synthesis unavailable: {exc}"
+
+    def _write_report(self, report: AssessmentReport, output_path: Optional[Path]) -> None:
+        path = output_path
+        if path is None:
+            self.config.results_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            safe_target = re.sub(r"[^A-Za-z0-9_.-]+", "_", report.target)
+            path = self.config.results_dir / f"serpenter_internal_{safe_target}_{stamp}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+        self.console.print(f"[green]Report written:[/green] {path}")
+
+    def _print_report_summary(self, report: AssessmentReport) -> None:
+        table = Table(title="Internal Assessment Summary")
+        table.add_column("Metric")
+        table.add_column("Count", justify="right")
+        table.add_row("Entities", str(len(report.entities)))
+        table.add_row("Findings", str(len(report.findings)))
+        table.add_row("Attack paths", str(len(report.attack_paths)))
+        table.add_row("Evidence items", str(len(report.evidence)))
+        self.console.print(table)
+        if report.ai_summary:
+            self.console.print(Panel(report.ai_summary, title="AI Summary", border_style="cyan"))
+
+    @staticmethod
+    def _domain_to_base_dn(domain: Optional[str]) -> Optional[str]:
+        if not domain or "." not in domain:
+            return None
+        return ",".join(f"DC={part}" for part in domain.split(".") if part)
+
+    @staticmethod
+    def _ldap_bind_user(domain: Optional[str], username: Optional[str]) -> Optional[str]:
+        if not username:
+            return None
+        if "\\" in username or "@" in username or not domain:
+            return username
+        return f"{domain}\\{username}"
+
+    @staticmethod
+    def _looks_like_tool_failure(output: str) -> bool:
+        lowered = str(output).lower()
+        failure_markers = (
+            "not installed",
+            "failed:",
+            "error running",
+            "timed out",
+            "invalid ",
+            "traceback",
+            "could not",
+        )
+        return any(marker in lowered for marker in failure_markers)
+
+    @staticmethod
+    def _redact(data: Dict[str, Any]) -> Dict[str, Any]:
+        redacted = dict(data)
+        for key in ("password", "hashes", "aesKey"):
+            if redacted.get(key):
+                redacted[key] = "***"
+        return redacted
+
+    @staticmethod
+    def _extract_hosts(output: str) -> List[str]:
+        hosts = []
+        patterns = [
+            r"Nmap scan report for\s+([^\s()]+)",
+            r"•\s+[A-Za-z0-9_.-]+\s+\(([0-9A-Fa-f:.]+)\)",
+            r"\s+•\s+([0-9A-Fa-f:.]+|[A-Za-z0-9_.-]+)$",
+        ]
+        for line in output.splitlines():
+            for pattern in patterns:
+                match = re.search(pattern, line.strip())
+                if match:
+                    host = match.group(1)
+                    if host not in hosts and not host.lower().startswith(("command", "output")):
+                        hosts.append(host)
+        return hosts
+
+    @staticmethod
+    def _extract_services(output: str) -> List[tuple[str, str, Optional[str]]]:
+        services = []
+        current_host = None
+        for line in output.splitlines():
+            host_match = re.search(r"Nmap scan report for\s+([^\s()]+)", line)
+            if host_match:
+                current_host = host_match.group(1)
+            formatted_host_match = re.search(r"•\s+(.+?)\s+\(([0-9A-Fa-f:.]+)\):\s+\d+/", line)
+            if formatted_host_match:
+                current_host = formatted_host_match.group(2)
+            port_match = re.search(r"(\d+)/(tcp|udp)\s+open\s+([A-Za-z0-9_.-]+)", line)
+            if port_match:
+                services.append((port_match.group(1), port_match.group(3), current_host))
+        return services
+
+    @staticmethod
+    def _target_from_command(output: str) -> Optional[str]:
+        command_match = re.search(r"Command:\s+(.+)", output)
+        if not command_match:
+            return None
+        command = command_match.group(1)
+
+        netexec_match = re.search(r"(?:sudo\s+)?netexec\s+\w+\s+([0-9A-Za-z_.:/-]+)", command)
+        if netexec_match:
+            return netexec_match.group(1)
+
+        nmap_match = re.search(r"(?:sudo\s+)?nmap\b.+\s([0-9A-Za-z_.:/-]+)$", command)
+        if nmap_match:
+            return nmap_match.group(1)
+
+        dc_match = re.search(r"-dc-ip\s+([0-9A-Za-z_.:/-]+)", command)
+        if dc_match:
+            return dc_match.group(1)
+        return None
+
+    @staticmethod
+    def _fallback_summary(report: AssessmentReport) -> str:
+        if not report.findings:
+            return "No supported findings were derived from the collected evidence. Review failed/skipped evidence for tool or credential gaps."
+        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "informational": 4}
+        ordered = sorted(report.findings, key=lambda item: severity_order.get(item.severity.lower(), 9))
+        top = ordered[:5]
+        lines = ["Top findings:"]
+        lines.extend(f"- {item.severity.upper()}: {item.vuln_name} on {item.target}" for item in top)
+        return "\n".join(lines)

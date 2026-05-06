@@ -83,6 +83,38 @@ uv run serpenter_cli.py --config my-config.yaml run "enumerate domain controller
 uv run serpenter_cli.py --debug run "find accessible shares on 10.0.0.5"
 ```
 
+### Full Internal Assessment
+
+Serpenter also has a full-scale internal assessment mode that produces a
+Bugbase-style report with entities, findings, attack paths, evidence, and an
+AI analyst summary while keeping Serpenter's AI-native tool execution model.
+
+```bash
+# Unauthenticated/anonymous-safe internal assessment
+uv run serpenter_cli.py internal-assessment 192.168.1.0/24 --no-ai -o results/internal.json
+
+# Authenticated AD assessment with LDAP, Kerberos, SMB, and AD CS coverage
+uv run serpenter_cli.py internal-assessment 10.0.0.0/24 \
+  --domain corp.local \
+  --dc-ip 10.0.0.10 \
+  -u auditor \
+  -p 'Password123!' \
+  -o results/corp-internal.json
+
+# Enable active exploit validation steps explicitly
+uv run serpenter_cli.py internal-assessment 10.0.0.0/24 \
+  --domain corp.local --dc-ip 10.0.0.10 -u auditor -p 'Password123!' \
+  --allow-exploits
+```
+
+Default output mirrors the internal assessment mental model:
+
+- `entities`: hosts, services, and discovered AD/service objects
+- `findings`: vulnerability-style records with severity, target, evidence, and remediation
+- `attack_paths`: source-to-evidence-to-vulnerability chains
+- `evidence`: every phase/tool run with redacted arguments and raw output
+- `ai_summary`: LLM synthesis when enabled, deterministic fallback otherwise
+
 ### Interactive Mode Commands
 
 ```bash

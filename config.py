@@ -20,6 +20,7 @@ class Config:
     llm_temperature: float = 0.1
     llm_max_tokens: int = 4096
     llm_api_key: Optional[str] = None
+    require_llm_api_key: bool = True
 
     # Agent behavior
     debug: bool = False
@@ -39,11 +40,15 @@ class Config:
     save_results: bool = False
     results_dir: Path = Path("./results")
 
+    # Internal assessment configuration
+    assessment_ai_synthesis: bool = True
+    assessment_allow_exploits: bool = False
+
     # Config file path
     config_file: Optional[Path] = None
 
     @classmethod
-    def from_yaml(cls, config_path: Optional[Path] = None) -> "Config":
+    def from_yaml(cls, config_path: Optional[Path] = None, require_llm: bool = True) -> "Config":
         """Load configuration from YAML file"""
         
         # Default config locations
@@ -62,7 +67,7 @@ class Config:
         
         if config_path is None or not config_path.exists():
             # Return default config if no file found
-            return cls()
+            return cls(require_llm_api_key=require_llm)
         
         # Load YAML
         with open(config_path, 'r') as f:
@@ -73,6 +78,7 @@ class Config:
         agent_config = config_data.get('agent', {})
         tools_config = config_data.get('tools', {})
         output_config = config_data.get('output', {})
+        assessment_config = config_data.get('assessment', {})
         
         return cls(
             # LLM settings
@@ -81,6 +87,7 @@ class Config:
             llm_temperature=llm_config.get('temperature', 0.1),
             llm_max_tokens=llm_config.get('max_tokens', 4096),
             llm_api_key=llm_config.get('api_key'),
+            require_llm_api_key=require_llm,
             
             # Agent settings
             debug=agent_config.get('debug', False),
@@ -99,6 +106,10 @@ class Config:
             log_file=Path(output_config['log_file']) if output_config.get('log_file') else None,
             save_results=output_config.get('save_results', False),
             results_dir=Path(output_config.get('results_dir', './results')),
+
+            # Internal assessment settings
+            assessment_ai_synthesis=assessment_config.get('ai_synthesis', True),
+            assessment_allow_exploits=assessment_config.get('allow_exploits', False),
             
             config_file=config_path,
         )
@@ -119,7 +130,7 @@ class Config:
             if env_var:
                 self.llm_api_key = os.getenv(env_var)
                 
-                if not self.llm_api_key:
+                if not self.llm_api_key and self.require_llm_api_key:
                     raise ValueError(
                         f"{env_var} not found. "
                         f"Set it via environment variable or in config.yaml"
