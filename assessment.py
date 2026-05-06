@@ -72,6 +72,15 @@ class AttackPath:
 
 
 @dataclass
+class CredentialCandidate:
+    username: str
+    password: str
+    domain: Optional[str] = None
+    source_evidence: Optional[int] = None
+    source: str = "evidence"
+
+
+@dataclass
 class AssessmentReport:
     target: str
     started_at: str
@@ -326,9 +335,7 @@ class InternalAssessmentRunner:
                 "Pass --rce-target with --allow-exploits to run non-destructive RCE validation."
             )
         else:
-            report.next_steps.append(
-                "No credentials were supplied or discovered, so Serpenter did not attempt RCE validation."
-            )
+            self._phase_discovered_secret_reuse(report, report.target, rce_command or "whoami")
 
         if username and (password or hashes) and domain:
             self._record_tool(
@@ -369,6 +376,152 @@ class InternalAssessmentRunner:
             if item not in ranked:
                 ranked.append(item)
         return ranked[:3]
+
+    def _phase_discovered_secret_reuse(
+        self,
+        report: AssessmentReport,
+        target: str,
+        rce_command: str,
+    ) -> None:
+        credentials = self._extract_credential_candidates(report)
+        if not credentials:
+            report.next_steps.append(
+                "No credentials were supplied or discovered, so Serpenter did not attempt credentialed RCE or ADCS validation."
+            )
+            return
+
+        dc_by_domain = self._extract_domain_dc_map(report)
+        any_rce = False
+        for credential in credentials:
+            smb_username = self._format_domain_username(credential)
+            audit = self._record_tool(
+                report,
+                phase="credential_validation",
+                tool_name="netexec",
+                objective=f"Validate discovered credential {smb_username} across SMB",
+                kwargs={
+                    "target": target,
+                    "protocol": "smb",
+                    "username": smb_username,
+                    "password": credential.password,
+                },
+            )
+            pwned_hosts = self._extract_pwned_hosts(audit.output)
+            if pwned_hosts:
+                self._record_tool(
+                    report,
+                    phase="rce_validation",
+                    tool_name="netexec",
+                    objective=f"Validate command execution on {pwned_hosts[0]} using discovered credential",
+                    kwargs={
+                        "target": pwned_hosts[0],
+                        "protocol": "smb",
+                        "username": smb_username,
+                        "password": credential.password,
+                        "execute_command": rce_command,
+                    },
+                )
+                any_rce = True
+
+            if credential.domain:
+                self._record_tool(
+                    report,
+                    phase="credential_validation",
+                    tool_name="netexec",
+                    objective=f"Validate discovered credential {smb_username} against LDAP",
+                    kwargs={
+                        "target": target,
+                        "protocol": "ldap",
+                        "username": smb_username,
+                        "password": credential.password,
+                        "action": "computers",
+                    },
+                )
+
+                for dc_ip in self._rank_dc_targets(dc_by_domain.get(credential.domain.lower(), []), []):
+                    self._record_tool(
+                        report,
+                        phase="adcs",
+                        tool_name="certipy",
+                        objective=f"Enumerate AD CS using discovered credential {credential.username}@{credential.domain} on {dc_ip}",
+                        kwargs={
+                            "action": "find",
+                            "target": dc_ip,
+                            "username": credential.username,
+                            "password": credential.password,
+                            "domain": credential.domain,
+                            "dc_ip": dc_ip,
+                            "extra_args": "-vulnerable -stdout",
+                        },
+                    )
+
+        if not any_rce:
+            report.next_steps.append(
+                "Discovered credentials were replayed, but none produced administrative access for RCE validation."
+            )
+
+    def _extract_credential_candidates(self, report: AssessmentReport) -> List[CredentialCandidate]:
+        candidates = []
+        seen = set()
+        host_domains = self._extract_host_domain_map(report)
+        for index, evidence in enumerate(report.evidence):
+            for line in evidence.output.splitlines():
+                password_match = re.search(
+                    r"SMB\s+((?:\d{1,3}\.){3}\d{1,3})\s+\d+\s+\S+\s+"
+                    r"(?P<username>[A-Za-z0-9_.@$-]+)\s+"
+                    r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+\d+\s+.*?"
+                    r"Password\s*:\s*(?P<password>[^)\s]+)",
+                    line,
+                    flags=re.IGNORECASE,
+                )
+                if not password_match:
+                    continue
+                host = password_match.group(1)
+                username = password_match.group("username")
+                password = password_match.group("password").strip()
+                domain = host_domains.get(host)
+                key = (domain or "", username.lower(), password)
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(
+                    CredentialCandidate(
+                        username=username,
+                        password=password,
+                        domain=domain,
+                        source_evidence=index,
+                        source="smb_user_description",
+                    )
+                )
+        return candidates
+
+    @staticmethod
+    def _format_domain_username(credential: CredentialCandidate) -> str:
+        if credential.domain:
+            return f"{credential.domain}\\{credential.username}"
+        return credential.username
+
+    def _extract_host_domain_map(self, report: AssessmentReport) -> Dict[str, str]:
+        host_domains = {}
+        for evidence in report.evidence:
+            for line in evidence.output.splitlines():
+                match = re.search(
+                    r"\b((?:\d{1,3}\.){3}\d{1,3})\b.*?\(name:[^)]+?\)\s+\(domain:([^)]+)\)",
+                    line,
+                    flags=re.IGNORECASE,
+                )
+                if match:
+                    host_domains[match.group(1)] = match.group(2)
+        return host_domains
+
+    def _extract_domain_dc_map(self, report: AssessmentReport) -> Dict[str, List[str]]:
+        host_domains = self._extract_host_domain_map(report)
+        dc_hosts = set(self._extract_dc_candidates(report))
+        mapping: Dict[str, List[str]] = {}
+        for host, domain in host_domains.items():
+            if host in dc_hosts:
+                mapping.setdefault(domain.lower(), []).append(host)
+        return mapping
 
     def _record_tool(
         self,
@@ -614,6 +767,8 @@ class InternalAssessmentRunner:
                             "Do not use prior knowledge of public labs, CTFs, GOAD, default passwords, or common demo credentials. "
                             "Do not infer or invent credentials. Credentials are valid evidence only if present in tool output "
                             "or supplied as explicit run input. "
+                            "When tool evidence contains a secret, credential, hash, key, or ticket, identify it as reusable evidence "
+                            "and evaluate findings from the validation attempts that reused it across hosts and techniques. "
                             "Pay special attention to Active Directory Certificate Services evidence from Certipy, "
                             "including ESC template issues, vulnerable CA settings, enrollment agent abuse, "
                             "SAN supply, weak EKUs, and NTLM relay exposure. "

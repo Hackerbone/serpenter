@@ -39,6 +39,9 @@ TOOL USAGE STRATEGY:
 - Use impacket tool for AD exploitation (secretsdump, GetUserSPNs, GetNPUsers, psexec, wmiexec, etc.)
 - Use certipy for AD Certificate Services (AD CS) attacks and certificate abuse (ESC1-8, golden certificates, shadow credentials)
 - Chain tools together logically (discover hosts → enumerate shares/users → extract hashes → crack passwords)
+- Treat discovered secrets as reusable evidence: when tool output reveals a password, hash, ticket, key, or credential in a description/share/file,
+  validate it across relevant hosts and protocols before moving on. Use successful validation to decide whether safe command execution,
+  LDAP/ADCS enumeration, Kerberoasting, or other follow-on checks are justified. Never invent credentials or rely on lab-specific prior knowledge.
 - Use hashcat for password cracking after obtaining hashes (NTLM, NetNTLMv2, Kerberoast, AS-REP)
 - Parse and filter results to highlight what matters
 - NEVER use bash for ldapsearch, impacket, certipy, or complex multi-line scripts
