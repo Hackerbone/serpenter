@@ -27,6 +27,9 @@ console = Console()
 
 
 COMMON_INTERNAL_PORTS = "21,22,53,88,135,139,389,445,464,593,636,1433,3306,3389,5985,5986,9389"
+PUBLIC_LAB_CREDENTIAL_CANDIDATES = [
+    {"username": "vagrant", "password": "vagrant", "local_auth": True, "profile": "public_lab_default"},
+]
 
 
 @dataclass
@@ -314,6 +317,8 @@ class InternalAssessmentRunner:
                     "execute_command": rce_command or "whoami",
                 },
             )
+        elif not username and not password:
+            self._phase_public_lab_rce_validation(report, report.target, rce_command or "whoami")
         elif username and password:
             report.next_steps.append(
                 "Pass --rce-target with --allow-exploits to run non-destructive RCE validation."
@@ -337,6 +342,50 @@ class InternalAssessmentRunner:
                 },
             )
 
+    def _phase_public_lab_rce_validation(
+        self,
+        report: AssessmentReport,
+        target: str,
+        rce_command: str,
+    ) -> None:
+        for candidate in PUBLIC_LAB_CREDENTIAL_CANDIDATES:
+            audit = self._record_tool(
+                report,
+                phase="credential_validation",
+                tool_name="netexec",
+                objective=f"Audit {candidate['profile']} credential reachability",
+                kwargs={
+                    "target": target,
+                    "protocol": "smb",
+                    "username": candidate["username"],
+                    "password": candidate["password"],
+                    "local_auth": candidate["local_auth"],
+                },
+            )
+            pwned_hosts = self._extract_pwned_hosts(audit.output)
+            if not pwned_hosts:
+                continue
+
+            self._record_tool(
+                report,
+                phase="rce_validation",
+                tool_name="netexec",
+                objective=f"Validate command execution on {pwned_hosts[0]}",
+                kwargs={
+                    "target": pwned_hosts[0],
+                    "protocol": "smb",
+                    "username": candidate["username"],
+                    "password": candidate["password"],
+                    "local_auth": candidate["local_auth"],
+                    "execute_command": rce_command,
+                },
+            )
+            return
+
+        report.next_steps.append(
+            "No public-lab default credential produced admin access; provide credentials or extend the credential candidate source."
+        )
+
     def _record_tool(
         self,
         report: AssessmentReport,
@@ -345,18 +394,18 @@ class InternalAssessmentRunner:
         tool_name: str,
         objective: str,
         kwargs: Dict[str, Any],
-    ) -> None:
+    ) -> Evidence:
         tool = self.tools.get(tool_name)
         if not tool:
-            report.evidence.append(
-                Evidence(
-                    phase=phase,
-                    tool=tool_name,
-                    objective=objective,
-                    status="skipped",
-                    output=f"Tool '{tool_name}' is not enabled in config.",
-                )
+            evidence = Evidence(
+                phase=phase,
+                tool=tool_name,
+                objective=objective,
+                status="skipped",
+                output=f"Tool '{tool_name}' is not enabled in config.",
             )
+            report.evidence.append(evidence)
+            return evidence
             return
 
         self.console.print(f"[dim]Running {phase}: {objective}[/dim]")
@@ -370,16 +419,16 @@ class InternalAssessmentRunner:
             output = f"{type(exc).__name__}: {exc}"
             status = "failed"
 
-        report.evidence.append(
-            Evidence(
-                phase=phase,
-                tool=tool_name,
-                objective=objective,
-                status=status,
-                output=str(output),
-                metadata={"args": self._redact(cleaned_kwargs if "cleaned_kwargs" in locals() else kwargs)},
-            )
+        evidence = Evidence(
+            phase=phase,
+            tool=tool_name,
+            objective=objective,
+            status=status,
+            output=str(output),
+            metadata={"args": self._redact(cleaned_kwargs if "cleaned_kwargs" in locals() else kwargs)},
         )
+        report.evidence.append(evidence)
+        return evidence
 
     def _derive_entities_and_findings(self, report: AssessmentReport) -> None:
         seen_entities = set()
@@ -686,13 +735,24 @@ class InternalAssessmentRunner:
         return services
 
     @staticmethod
+    def _extract_pwned_hosts(output: str) -> List[str]:
+        hosts = []
+        for line in output.splitlines():
+            if "Pwn3d!" not in line and "[ADMIN]" not in line:
+                continue
+            match = re.search(r"\b((?:\d{1,3}\.){3}\d{1,3})\b", line)
+            if match and match.group(1) not in hosts:
+                hosts.append(match.group(1))
+        return hosts
+
+    @staticmethod
     def _target_from_command(output: str) -> Optional[str]:
         command_match = re.search(r"Command:\s+(.+)", output)
         if not command_match:
             return None
         command = command_match.group(1)
 
-        netexec_match = re.search(r"(?:sudo\s+)?netexec\s+\w+\s+([0-9A-Za-z_.:/-]+)", command)
+        netexec_match = re.search(r"(?:sudo\s+)?(?:[^\s/]*/)*(?:netexec|nxc)\s+\w+\s+([0-9A-Za-z_.:/-]+)", command)
         if netexec_match:
             return netexec_match.group(1)
 
