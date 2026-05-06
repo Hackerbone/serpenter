@@ -434,7 +434,6 @@ class InternalAssessmentRunner:
                         "protocol": "ldap",
                         "username": smb_username,
                         "password": credential.password,
-                        "action": "computers",
                     },
                 )
 
@@ -979,6 +978,7 @@ class InternalAssessmentRunner:
             "invalid ",
             "traceback",
             "could not",
+            "unrecognized arguments",
         )
         return any(marker in lowered for marker in failure_markers)
 
