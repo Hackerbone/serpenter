@@ -412,6 +412,7 @@ class InternalAssessmentRunner:
         try:
             cleaned_kwargs = {key: value for key, value in kwargs.items() if value is not None}
             output = tool._run(**cleaned_kwargs)
+            output = self._redact_output(str(output), cleaned_kwargs)
             status = "ok"
             if self._looks_like_tool_failure(output):
                 status = "failed"
@@ -699,6 +700,15 @@ class InternalAssessmentRunner:
         for key in ("password", "hashes", "aesKey"):
             if redacted.get(key):
                 redacted[key] = "***"
+        return redacted
+
+    @staticmethod
+    def _redact_output(output: str, args: Dict[str, Any]) -> str:
+        redacted = output
+        for key in ("password", "hashes", "aesKey"):
+            value = args.get(key)
+            if value:
+                redacted = redacted.replace(str(value), "***")
         return redacted
 
     @staticmethod
