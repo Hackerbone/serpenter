@@ -106,7 +106,8 @@ uv run serpenter_cli.py internal-assessment 10.0.0.0/24 \
   --domain corp.local --dc-ip 10.0.0.10 -u auditor -p 'Password123!' \
   --allow-exploits
 
-# Subnet-only public lab run with non-destructive RCE validation
+# Subnet-only assessment. RCE validation runs only if credentials are supplied
+# or discovered from collected evidence by future credential-acquisition phases.
 uv run serpenter_cli.py internal-assessment 192.168.56.0/24 \
   --allow-exploits \
   --rce-command whoami \
@@ -123,6 +124,10 @@ Default output mirrors the internal assessment mental model:
 
 AI is required by default in internal assessment mode. Use `--no-ai` only for
 offline smoke tests or deterministic CI runs.
+
+Serpenter does not ship lab-specific secrets or default credentials. Any
+credentialed validation must come from explicit run input or evidence collected
+during the assessment.
 
 ### Interactive Mode Commands
 

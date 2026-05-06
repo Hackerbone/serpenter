@@ -28,23 +28,8 @@ console = Console()
 
 COMMON_INTERNAL_PORTS = "21,22,53,88,135,139,389,445,464,593,636,1433,3306,3389,5985,5986,9389"
 PUBLIC_LAB_CREDENTIAL_CANDIDATES = [
-    {"username": "vagrant", "password": "vagrant", "local_auth": True, "profile": "public_lab_default"},
-]
-PUBLIC_LAB_AD_CREDENTIAL_CANDIDATES = [
-    {
-        "username": "jon.snow",
-        "password": "iknownothing",
-        "domain": "north.sevenkingdoms.local",
-        "dc_hints": ["192.168.56.11"],
-        "profile": "goad_north_default",
-    },
-    {
-        "username": "missandei",
-        "password": "fr3edom",
-        "domain": "essos.local",
-        "dc_hints": ["192.168.56.12"],
-        "profile": "goad_essos_default",
-    },
+    # Intentionally empty. Serpenter must not carry lab-specific default
+    # credentials; credentials must come from user input or collected evidence.
 ]
 
 
@@ -314,8 +299,6 @@ class InternalAssessmentRunner:
                     "extra_args": "-vulnerable -stdout",
                 },
             )
-        elif not username and not password:
-            self._phase_public_lab_adcs_enumeration(report)
 
         if not allow_exploits:
             report.next_steps.append(
@@ -338,11 +321,13 @@ class InternalAssessmentRunner:
                     "execute_command": rce_command or "whoami",
                 },
             )
-        elif not username and not password:
-            self._phase_public_lab_rce_validation(report, report.target, rce_command or "whoami")
         elif username and password:
             report.next_steps.append(
                 "Pass --rce-target with --allow-exploits to run non-destructive RCE validation."
+            )
+        else:
+            report.next_steps.append(
+                "No credentials were supplied or discovered, so Serpenter did not attempt RCE validation."
             )
 
         if username and (password or hashes) and domain:
@@ -362,71 +347,6 @@ class InternalAssessmentRunner:
                     "extra_args": "-request -outputfile serpenter_kerberoast.txt",
                 },
             )
-
-    def _phase_public_lab_rce_validation(
-        self,
-        report: AssessmentReport,
-        target: str,
-        rce_command: str,
-    ) -> None:
-        for candidate in PUBLIC_LAB_CREDENTIAL_CANDIDATES:
-            audit = self._record_tool(
-                report,
-                phase="credential_validation",
-                tool_name="netexec",
-                objective=f"Audit {candidate['profile']} credential reachability",
-                kwargs={
-                    "target": target,
-                    "protocol": "smb",
-                    "username": candidate["username"],
-                    "password": candidate["password"],
-                    "local_auth": candidate["local_auth"],
-                },
-            )
-            pwned_hosts = self._extract_pwned_hosts(audit.output)
-            if not pwned_hosts:
-                continue
-
-            self._record_tool(
-                report,
-                phase="rce_validation",
-                tool_name="netexec",
-                objective=f"Validate command execution on {pwned_hosts[0]}",
-                kwargs={
-                    "target": pwned_hosts[0],
-                    "protocol": "smb",
-                    "username": candidate["username"],
-                    "password": candidate["password"],
-                    "local_auth": candidate["local_auth"],
-                    "execute_command": rce_command,
-                },
-            )
-            return
-
-        report.next_steps.append(
-            "No public-lab default credential produced admin access; provide credentials or extend the credential candidate source."
-        )
-
-    def _phase_public_lab_adcs_enumeration(self, report: AssessmentReport) -> None:
-        dc_candidates = self._extract_dc_candidates(report)
-        for candidate in PUBLIC_LAB_AD_CREDENTIAL_CANDIDATES:
-            dc_targets = self._rank_dc_targets(dc_candidates, candidate.get("dc_hints", []))
-            for dc_ip in dc_targets:
-                self._record_tool(
-                    report,
-                    phase="adcs",
-                    tool_name="certipy",
-                    objective=f"Enumerate AD CS vulnerable templates using {candidate['profile']} on {dc_ip}",
-                    kwargs={
-                        "action": "find",
-                        "target": dc_ip,
-                        "username": candidate["username"],
-                        "password": candidate["password"],
-                        "domain": candidate["domain"],
-                        "dc_ip": dc_ip,
-                        "extra_args": "-vulnerable -stdout",
-                    },
-                )
 
     def _extract_dc_candidates(self, report: AssessmentReport) -> List[str]:
         candidates = []
@@ -691,6 +611,9 @@ class InternalAssessmentRunner:
                         content=(
                             "You are SERPENTER's AD security assessment brain. "
                             "Extract only vulnerabilities that are directly supported by the provided tool evidence. "
+                            "Do not use prior knowledge of public labs, CTFs, GOAD, default passwords, or common demo credentials. "
+                            "Do not infer or invent credentials. Credentials are valid evidence only if present in tool output "
+                            "or supplied as explicit run input. "
                             "Pay special attention to Active Directory Certificate Services evidence from Certipy, "
                             "including ESC template issues, vulnerable CA settings, enrollment agent abuse, "
                             "SAN supply, weak EKUs, and NTLM relay exposure. "
@@ -805,6 +728,7 @@ class InternalAssessmentRunner:
                         content=(
                             "You are SERPENTER's internal assessment analyst. "
                             "Summarize impact, confidence, and prioritized next steps. "
+                            "Do not use prior knowledge of public labs, GOAD, default passwords, or unstated credentials. "
                             "Call out AD CS / Certipy evidence explicitly when present. "
                             "Do not invent findings that are not supported by evidence."
                         )
