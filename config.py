@@ -42,6 +42,7 @@ class Config:
 
     # Internal assessment configuration
     assessment_ai_synthesis: bool = True
+    assessment_require_ai: bool = True
     assessment_allow_exploits: bool = False
 
     # Config file path
@@ -109,6 +110,7 @@ class Config:
 
             # Internal assessment settings
             assessment_ai_synthesis=assessment_config.get('ai_synthesis', True),
+            assessment_require_ai=assessment_config.get('require_ai', True),
             assessment_allow_exploits=assessment_config.get('allow_exploits', False),
             
             config_file=config_path,

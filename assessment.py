@@ -95,6 +95,7 @@ class InternalAssessmentRunner:
         self.config = config
         self.console = Console()
         self.tools = {tool.name: tool for tool in get_tools(config.tools_enabled, config)}
+        self.llm = None
 
     def run(
         self,
@@ -114,6 +115,7 @@ class InternalAssessmentRunner:
     ) -> AssessmentReport:
         started_at = datetime.now(timezone.utc).isoformat()
         report = AssessmentReport(target=target, started_at=started_at)
+        self._ensure_ai_ready()
 
         self.console.print(
             Panel(
@@ -610,7 +612,7 @@ class InternalAssessmentRunner:
             return
 
         try:
-            llm = self.config.get_llm()
+            llm = self.llm or self.config.get_llm()
             evidence_payload = [
                 {
                     "index": index,
@@ -707,6 +709,8 @@ class InternalAssessmentRunner:
                     )
                 )
         except Exception as exc:
+            if getattr(self.config, "assessment_require_ai", True):
+                raise RuntimeError(f"AI evidence extraction failed: {exc}") from exc
             report.next_steps.append(f"AI evidence extraction unavailable: {exc}")
 
     def _synthesize_with_ai(self, report: AssessmentReport) -> None:
@@ -715,7 +719,7 @@ class InternalAssessmentRunner:
             return
 
         try:
-            llm = self.config.get_llm()
+            llm = self.llm or self.config.get_llm()
             evidence_preview = [
                 {
                     "phase": item.phase,
@@ -746,7 +750,23 @@ class InternalAssessmentRunner:
             )
             report.ai_summary = str(response.content)
         except Exception as exc:
+            if getattr(self.config, "assessment_require_ai", True):
+                raise RuntimeError(f"AI synthesis failed: {exc}") from exc
             report.ai_summary = f"{self._fallback_summary(report)}\n\nAI synthesis unavailable: {exc}"
+
+    def _ensure_ai_ready(self) -> None:
+        if not getattr(self.config, "assessment_ai_synthesis", True):
+            return
+        try:
+            self.llm = self.config.get_llm()
+        except Exception as exc:
+            if getattr(self.config, "assessment_require_ai", True):
+                raise RuntimeError(
+                    "AI is enabled but the configured LLM is unavailable. "
+                    "Set the provider API key in this shell, configure assessment.ai_synthesis=false, "
+                    "or run with --no-ai for offline smoke tests."
+                ) from exc
+            self.console.print(f"[yellow]AI unavailable, using deterministic fallback: {exc}[/yellow]")
 
     @staticmethod
     def _load_json_object(content: str) -> Optional[Dict[str, Any]]:

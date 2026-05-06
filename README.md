@@ -121,7 +121,8 @@ Default output mirrors the internal assessment mental model:
 - `evidence`: every phase/tool run with redacted arguments and raw output
 - `ai_summary`: LLM synthesis when enabled, deterministic fallback otherwise
 
-Use `--no-ai` only for offline smoke tests or deterministic CI runs.
+AI is required by default in internal assessment mode. Use `--no-ai` only for
+offline smoke tests or deterministic CI runs.
 
 ### Interactive Mode Commands
 

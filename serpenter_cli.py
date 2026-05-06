@@ -160,6 +160,7 @@ def internal_assessment(
         agent_config.confirm_commands = True
     if no_ai:
         agent_config.assessment_ai_synthesis = False
+        agent_config.assessment_require_ai = False
 
     effective_allow_exploits = allow_exploits or agent_config.assessment_allow_exploits
     runner = InternalAssessmentRunner(agent_config)

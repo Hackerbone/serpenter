@@ -93,6 +93,10 @@ assessment:
   # Use the configured LLM to synthesize impact, confidence, and next steps
   ai_synthesis: true
 
+  # Product mode requires AI to initialize successfully. Use --no-ai for
+  # offline smoke tests or deterministic CI runs.
+  require_ai: true
+
   # Keep active exploit validation disabled unless explicitly enabled by config
   # or by passing --allow-exploits to the CLI.
   allow_exploits: false
