@@ -4,6 +4,8 @@ Pentesting tool wrappers for SERPENTER
 
 import subprocess
 import shlex
+import shutil
+from pathlib import Path
 from typing import Optional, List, ClassVar, Dict
 from langchain.tools import BaseTool
 from pydantic import BaseModel, Field
@@ -183,6 +185,12 @@ class NetExecInput(BaseModel):
     password: Optional[str] = Field(
         default=None, description="Password for authentication"
     )
+    local_auth: bool = Field(
+        default=False, description="Use local authentication instead of domain authentication"
+    )
+    execute_command: Optional[str] = Field(
+        default=None, description="Non-interactive command to execute with -x after successful authentication"
+    )
 
 
 class NetExecTool(BaseTool):
@@ -222,6 +230,8 @@ class NetExecTool(BaseTool):
         action: Optional[str] = None,
         username: Optional[str] = None,
         password: Optional[str] = None,
+        local_auth: bool = False,
+        execute_command: Optional[str] = None,
     ) -> str:
         """Execute NetExec enumeration"""
 
@@ -230,9 +240,11 @@ class NetExecTool(BaseTool):
         if protocol not in valid_protocols:
             return f"Invalid protocol '{protocol}'. Valid options: {', '.join(valid_protocols)}"
 
-        # Build netexec command
+        netexec_binary = self._resolve_binary()
+
+        # Build netexec/nxc command
         # Format: netexec <protocol> <target> [options]
-        cmd = ["netexec", protocol, target]
+        cmd = [netexec_binary, protocol, target]
 
         # Add authentication if provided
         if username is not None:
@@ -254,6 +266,14 @@ class NetExecTool(BaseTool):
             action_flag = self._get_action_flag(protocol, action)
             if action_flag:
                 cmd.append(action_flag)
+
+        if local_auth:
+            cmd.append("--local-auth")
+
+        if execute_command:
+            if protocol not in ["smb", "winrm", "wmi"]:
+                return "Command execution is only supported for smb, winrm, and wmi protocols"
+            cmd.extend(["-x", execute_command])
 
         # Add sudo if configured
         if self.config and self.config.use_sudo and "netexec" in self.config.sudo_tools:
@@ -289,9 +309,22 @@ class NetExecTool(BaseTool):
         except subprocess.TimeoutExpired:
             return "NetExec scan timed out after 3 minutes"
         except FileNotFoundError:
-            return "NetExec not installed. Install with: pipx install netexec"
+            return "NetExec/NXC not installed. Install with: pipx install netexec"
         except Exception as e:
             return f"Error running netexec: {str(e)}"
+
+    def _resolve_binary(self) -> str:
+        """Resolve NetExec binary, falling back to NXC where GOAD commonly has it."""
+        for candidate in ["netexec", "nxc"]:
+            path = shutil.which(candidate)
+            if path:
+                return path
+
+        home_nxc = Path.home() / "nxc"
+        if home_nxc.exists() and home_nxc.is_file():
+            return str(home_nxc)
+
+        return "netexec"
 
     def _get_action_flag(self, protocol: str, action: str) -> Optional[str]:
         """Get the appropriate flag for the action based on protocol"""

@@ -105,6 +105,16 @@ uv run serpenter_cli.py internal-assessment 10.0.0.0/24 \
 uv run serpenter_cli.py internal-assessment 10.0.0.0/24 \
   --domain corp.local --dc-ip 10.0.0.10 -u auditor -p 'Password123!' \
   --allow-exploits
+
+# Non-destructive RCE validation against one host
+uv run serpenter_cli.py internal-assessment 192.168.56.0/24 \
+  --allow-exploits \
+  --rce-target 192.168.56.22 \
+  --local-auth \
+  -u vagrant \
+  -p vagrant \
+  --rce-command whoami \
+  --no-ai
 ```
 
 Default output mirrors the internal assessment mental model:

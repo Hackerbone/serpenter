@@ -104,6 +104,9 @@ class InternalAssessmentRunner:
         dc_ip: Optional[str] = None,
         base_dn: Optional[str] = None,
         allow_exploits: bool = False,
+        rce_target: Optional[str] = None,
+        rce_command: str = "whoami",
+        local_auth: bool = False,
         output_path: Optional[Path] = None,
     ) -> AssessmentReport:
         started_at = datetime.now(timezone.utc).isoformat()
@@ -143,6 +146,9 @@ class InternalAssessmentRunner:
             hashes=hashes,
             dc_ip=resolved_dc,
             allow_exploits=allow_exploits,
+            rce_target=rce_target,
+            rce_command=rce_command,
+            local_auth=local_auth,
         )
 
         self._derive_entities_and_findings(report)
@@ -266,6 +272,9 @@ class InternalAssessmentRunner:
         hashes: Optional[str],
         dc_ip: str,
         allow_exploits: bool,
+        rce_target: Optional[str],
+        rce_command: str,
+        local_auth: bool,
     ) -> None:
         if username and password and domain:
             self._record_tool(
@@ -289,6 +298,26 @@ class InternalAssessmentRunner:
                 "Run again with --allow-exploits to actively request roastable tickets or perform exploit validation."
             )
             return
+
+        if username and password and rce_target:
+            self._record_tool(
+                report,
+                phase="rce_validation",
+                tool_name="netexec",
+                objective=f"Validate command execution on {rce_target}",
+                kwargs={
+                    "target": rce_target,
+                    "protocol": "smb",
+                    "username": username,
+                    "password": password,
+                    "local_auth": local_auth,
+                    "execute_command": rce_command or "whoami",
+                },
+            )
+        elif username and password:
+            report.next_steps.append(
+                "Pass --rce-target with --allow-exploits to run non-destructive RCE validation."
+            )
 
         if username and (password or hashes) and domain:
             self._record_tool(
@@ -419,6 +448,19 @@ class InternalAssessmentRunner:
                     "The supplied credential appears to have administrative access on at least one service.",
                     idx,
                     "Rotate the credential if unexpected, reduce local admin reach, and enforce tiered administration.",
+                )
+
+            if evidence.status == "ok" and ("Executed command" in output or "Pwn3d!" in output) and evidence.phase == "rce_validation":
+                target = self._target_from_command(output) or report.target
+                add_finding(
+                    "Remote command execution validated",
+                    "RCE_VALIDATED",
+                    "critical",
+                    target,
+                    "A non-destructive command execution check completed on the target.",
+                    idx,
+                    "Remove unnecessary local administrator rights, restrict remote management, and rotate exposed credentials.",
+                    command=self._redact(evidence.metadata.get("args", {})).get("execute_command", "whoami"),
                 )
 
             if "$krb5tgs$" in output or "SERVICE PRINCIPAL NAMES" in output:

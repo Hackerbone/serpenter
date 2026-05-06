@@ -114,6 +114,9 @@ def run(objective, target, auto, debug, sudo, confirm, config):
 @click.option("--dc-ip", help="Domain Controller IP/hostname. Defaults to target.")
 @click.option("--base-dn", help="LDAP base DN, e.g. DC=corp,DC=local. Derived from --domain when possible.")
 @click.option("--allow-exploits", is_flag=True, help="Enable active exploit validation steps. Off by default.")
+@click.option("--rce-target", help="Single host for non-destructive RCE validation when --allow-exploits is set")
+@click.option("--rce-command", default="whoami", show_default=True, help="Command used for RCE validation")
+@click.option("--local-auth", is_flag=True, help="Use local authentication for SMB RCE validation")
 @click.option("--no-ai", is_flag=True, help="Disable LLM synthesis and use deterministic summary only.")
 @click.option("--output", "-o", type=click.Path(), help="Write JSON report to this path")
 @click.option("--debug", is_flag=True, help="Enable debug mode")
@@ -129,6 +132,9 @@ def internal_assessment(
     dc_ip,
     base_dn,
     allow_exploits,
+    rce_target,
+    rce_command,
+    local_auth,
     no_ai,
     output,
     debug,
@@ -168,6 +174,9 @@ def internal_assessment(
             dc_ip=dc_ip,
             base_dn=base_dn,
             allow_exploits=effective_allow_exploits,
+            rce_target=rce_target,
+            rce_command=rce_command,
+            local_auth=local_auth,
             output_path=Path(output) if output else None,
         )
     except KeyboardInterrupt:
