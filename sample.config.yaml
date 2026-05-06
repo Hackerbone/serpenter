@@ -97,6 +97,10 @@ assessment:
   # offline smoke tests or deterministic CI runs.
   require_ai: true
 
+  # Keep tool arguments and command output reproducible in reports. Provider
+  # API keys are never written to report evidence.
+  redact_evidence: false
+
   # Keep active exploit validation disabled unless explicitly enabled by config
   # or by passing --allow-exploits to the CLI.
   allow_exploits: false

@@ -118,7 +118,7 @@ Default output mirrors the internal assessment mental model:
 - `entities`: hosts, services, and discovered AD/service objects
 - `findings`: vulnerability-style records with severity, target, evidence, and remediation
 - `attack_paths`: source-to-evidence-to-vulnerability chains
-- `evidence`: every phase/tool run with redacted arguments and raw output
+- `evidence`: every phase/tool run with reproducible command arguments and raw output
 - `ai_summary`: LLM synthesis when enabled, deterministic fallback otherwise
 
 AI is required by default in internal assessment mode. Use `--no-ai` only for

@@ -30,6 +30,22 @@ COMMON_INTERNAL_PORTS = "21,22,53,88,135,139,389,445,464,593,636,1433,3306,3389,
 PUBLIC_LAB_CREDENTIAL_CANDIDATES = [
     {"username": "vagrant", "password": "vagrant", "local_auth": True, "profile": "public_lab_default"},
 ]
+PUBLIC_LAB_AD_CREDENTIAL_CANDIDATES = [
+    {
+        "username": "jon.snow",
+        "password": "iknownothing",
+        "domain": "north.sevenkingdoms.local",
+        "dc_hints": ["192.168.56.11"],
+        "profile": "goad_north_default",
+    },
+    {
+        "username": "missandei",
+        "password": "fr3edom",
+        "domain": "essos.local",
+        "dc_hints": ["192.168.56.12"],
+        "profile": "goad_essos_default",
+    },
+]
 
 
 @dataclass
@@ -298,6 +314,8 @@ class InternalAssessmentRunner:
                     "extra_args": "-vulnerable -stdout",
                 },
             )
+        elif not username and not password:
+            self._phase_public_lab_adcs_enumeration(report)
 
         if not allow_exploits:
             report.next_steps.append(
@@ -389,6 +407,49 @@ class InternalAssessmentRunner:
             "No public-lab default credential produced admin access; provide credentials or extend the credential candidate source."
         )
 
+    def _phase_public_lab_adcs_enumeration(self, report: AssessmentReport) -> None:
+        dc_candidates = self._extract_dc_candidates(report)
+        for candidate in PUBLIC_LAB_AD_CREDENTIAL_CANDIDATES:
+            dc_targets = self._rank_dc_targets(dc_candidates, candidate.get("dc_hints", []))
+            for dc_ip in dc_targets:
+                self._record_tool(
+                    report,
+                    phase="adcs",
+                    tool_name="certipy",
+                    objective=f"Enumerate AD CS vulnerable templates using {candidate['profile']} on {dc_ip}",
+                    kwargs={
+                        "action": "find",
+                        "target": dc_ip,
+                        "username": candidate["username"],
+                        "password": candidate["password"],
+                        "domain": candidate["domain"],
+                        "dc_ip": dc_ip,
+                        "extra_args": "-vulnerable -stdout",
+                    },
+                )
+
+    def _extract_dc_candidates(self, report: AssessmentReport) -> List[str]:
+        candidates = []
+        dc_ports = {"88", "389", "636", "9389"}
+        dc_services = {"kerberos-sec", "ldap", "ldapssl", "adws"}
+        for evidence in report.evidence:
+            for port, service, host in self._extract_services(evidence.output):
+                if host and (port in dc_ports or service in dc_services):
+                    if host not in candidates:
+                        candidates.append(host)
+        return candidates
+
+    @staticmethod
+    def _rank_dc_targets(discovered: List[str], hints: List[str]) -> List[str]:
+        ranked = []
+        for hint in hints:
+            if hint not in ranked:
+                ranked.append(hint)
+        for item in discovered:
+            if item not in ranked:
+                ranked.append(item)
+        return ranked[:3]
+
     def _record_tool(
         self,
         report: AssessmentReport,
@@ -409,7 +470,6 @@ class InternalAssessmentRunner:
             )
             report.evidence.append(evidence)
             return evidence
-            return
 
         self.console.print(f"[dim]Running {phase}: {objective}[/dim]")
         try:
@@ -631,6 +691,9 @@ class InternalAssessmentRunner:
                         content=(
                             "You are SERPENTER's AD security assessment brain. "
                             "Extract only vulnerabilities that are directly supported by the provided tool evidence. "
+                            "Pay special attention to Active Directory Certificate Services evidence from Certipy, "
+                            "including ESC template issues, vulnerable CA settings, enrollment agent abuse, "
+                            "SAN supply, weak EKUs, and NTLM relay exposure. "
                             "Return strict JSON only. Do not include markdown."
                         )
                     ),
@@ -742,6 +805,7 @@ class InternalAssessmentRunner:
                         content=(
                             "You are SERPENTER's internal assessment analyst. "
                             "Summarize impact, confidence, and prioritized next steps. "
+                            "Call out AD CS / Certipy evidence explicitly when present. "
                             "Do not invent findings that are not supported by evidence."
                         )
                     ),
@@ -839,16 +903,18 @@ class InternalAssessmentRunner:
         )
         return any(marker in lowered for marker in failure_markers)
 
-    @staticmethod
-    def _redact(data: Dict[str, Any]) -> Dict[str, Any]:
+    def _redact(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        if not getattr(self.config, "assessment_redact_evidence", False):
+            return dict(data)
         redacted = dict(data)
         for key in ("password", "hashes", "aesKey"):
             if redacted.get(key):
                 redacted[key] = "***"
         return redacted
 
-    @staticmethod
-    def _redact_output(output: str, args: Dict[str, Any]) -> str:
+    def _redact_output(self, output: str, args: Dict[str, Any]) -> str:
+        if not getattr(self.config, "assessment_redact_evidence", False):
+            return output
         redacted = output
         for key in ("password", "hashes", "aesKey"):
             value = args.get(key)
