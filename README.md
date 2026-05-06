@@ -90,8 +90,8 @@ Bugbase-style report with entities, findings, attack paths, evidence, and an
 AI analyst summary while keeping Serpenter's AI-native tool execution model.
 
 ```bash
-# Unauthenticated/anonymous-safe internal assessment
-uv run serpenter_cli.py internal-assessment 192.168.1.0/24 --no-ai -o results/internal.json
+# Unauthenticated/anonymous-safe internal assessment with AI evidence analysis
+uv run serpenter_cli.py internal-assessment 192.168.1.0/24 -o results/internal.json
 
 # Authenticated AD assessment with LDAP, Kerberos, SMB, and AD CS coverage
 uv run serpenter_cli.py internal-assessment 10.0.0.0/24 \
@@ -110,7 +110,7 @@ uv run serpenter_cli.py internal-assessment 10.0.0.0/24 \
 uv run serpenter_cli.py internal-assessment 192.168.56.0/24 \
   --allow-exploits \
   --rce-command whoami \
-  --no-ai
+  -o results/goad-internal.json
 ```
 
 Default output mirrors the internal assessment mental model:
@@ -120,6 +120,8 @@ Default output mirrors the internal assessment mental model:
 - `attack_paths`: source-to-evidence-to-vulnerability chains
 - `evidence`: every phase/tool run with redacted arguments and raw output
 - `ai_summary`: LLM synthesis when enabled, deterministic fallback otherwise
+
+Use `--no-ai` only for offline smoke tests or deterministic CI runs.
 
 ### Interactive Mode Commands
 

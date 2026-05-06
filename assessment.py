@@ -155,6 +155,7 @@ class InternalAssessmentRunner:
         )
 
         self._derive_entities_and_findings(report)
+        self._derive_ai_findings(report)
         self._build_attack_paths(report)
         self._synthesize_with_ai(report)
 
@@ -604,6 +605,110 @@ class InternalAssessmentRunner:
                 )
             )
 
+    def _derive_ai_findings(self, report: AssessmentReport) -> None:
+        if not getattr(self.config, "assessment_ai_synthesis", True):
+            return
+
+        try:
+            llm = self.config.get_llm()
+            evidence_payload = [
+                {
+                    "index": index,
+                    "phase": item.phase,
+                    "tool": item.tool,
+                    "objective": item.objective,
+                    "status": item.status,
+                    "output": item.output[:3000],
+                }
+                for index, item in enumerate(report.evidence)
+            ]
+            existing_findings = [asdict(item) for item in report.findings]
+            response = llm.invoke(
+                [
+                    SystemMessage(
+                        content=(
+                            "You are SERPENTER's AD security assessment brain. "
+                            "Extract only vulnerabilities that are directly supported by the provided tool evidence. "
+                            "Return strict JSON only. Do not include markdown."
+                        )
+                    ),
+                    HumanMessage(
+                        content=json.dumps(
+                            {
+                                "target": report.target,
+                                "evidence": evidence_payload,
+                                "existing_findings": existing_findings,
+                                "schema": {
+                                    "findings": [
+                                        {
+                                            "vuln_name": "short title",
+                                            "vuln_type": "stable uppercase type",
+                                            "severity": "critical|high|medium|low|informational",
+                                            "target": "host/ip/subnet",
+                                            "description": "what was proven",
+                                            "evidence_refs": [0],
+                                            "remediation": "specific remediation",
+                                            "confidence": "high|medium|low",
+                                        }
+                                    ]
+                                },
+                            },
+                            indent=2,
+                        )
+                    ),
+                ]
+            )
+            parsed = self._load_json_object(str(response.content))
+            if not isinstance(parsed, dict):
+                return
+            ai_findings = parsed.get("findings")
+            if not isinstance(ai_findings, list):
+                return
+
+            existing_keys = {
+                (item.vuln_type, item.target, item.vuln_name)
+                for item in report.findings
+            }
+            for raw in ai_findings:
+                if not isinstance(raw, dict):
+                    continue
+                vuln_name = str(raw.get("vuln_name") or "").strip()
+                vuln_type = str(raw.get("vuln_type") or "").strip().upper()
+                severity = str(raw.get("severity") or "informational").strip().lower()
+                target = str(raw.get("target") or report.target).strip()
+                description = str(raw.get("description") or "").strip()
+                remediation = str(raw.get("remediation") or "").strip()
+                evidence_refs = [
+                    ref for ref in raw.get("evidence_refs", [])
+                    if isinstance(ref, int) and 0 <= ref < len(report.evidence)
+                ]
+                if not vuln_name or not vuln_type or not description or not evidence_refs:
+                    continue
+                if severity not in {"critical", "high", "medium", "low", "informational"}:
+                    severity = "informational"
+
+                key = (vuln_type, target, vuln_name)
+                if key in existing_keys:
+                    continue
+                existing_keys.add(key)
+                report.findings.append(
+                    Finding(
+                        vuln_name=vuln_name,
+                        vuln_type=vuln_type,
+                        severity=severity,
+                        target=target,
+                        description=description,
+                        evidence_refs=evidence_refs,
+                        remediation=remediation,
+                        metadata={
+                            "source": "ai_evidence_extraction",
+                            "confidence": raw.get("confidence", "medium"),
+                        },
+                    )
+                )
+        except Exception as exc:
+            report.next_steps.append(f"AI evidence extraction unavailable: {exc}")
+
     def _synthesize_with_ai(self, report: AssessmentReport) -> None:
         if not getattr(self.config, "assessment_ai_synthesis", True):
             report.ai_summary = self._fallback_summary(report)
@@ -642,6 +747,26 @@ class InternalAssessmentRunner:
             report.ai_summary = str(response.content)
         except Exception as exc:
             report.ai_summary = f"{self._fallback_summary(report)}\n\nAI synthesis unavailable: {exc}"
+
+    @staticmethod
+    def _load_json_object(content: str) -> Optional[Dict[str, Any]]:
+        text = content.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"\s*```$", "", text)
+        try:
+            loaded = json.loads(text)
+            return loaded if isinstance(loaded, dict) else None
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+            if not match:
+                return None
+            try:
+                loaded = json.loads(match.group(0))
+                return loaded if isinstance(loaded, dict) else None
+            except json.JSONDecodeError:
+                return None
+
 
     def _write_report(self, report: AssessmentReport, output_path: Optional[Path]) -> None:
         path = output_path
